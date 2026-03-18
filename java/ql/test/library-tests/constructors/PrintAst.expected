@@ -10,6 +10,7 @@ constructors/A.java:
 #    8|         0: [Parameter] i
 #    8|           0: [TypeAccess] int
 #    8|       5: [BlockStmt] { ... }
+#    8|         0: [SuperConstructorInvocationStmt] super(...)
 #   10|     5: [Method] main
 #   10|       3: [TypeAccess] void
 #-----|       4: (Parameters)

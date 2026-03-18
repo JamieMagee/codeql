@@ -1,0 +1,2 @@
+unusedDiagnosticException
+| Test.java:16:1:16:95 | // Diagnostic Matches: In file Test.java:8:15 no end location for JCMethodInvocation : yield(x) |

@@ -1,7 +1,7 @@
 | TestThrow.java:7:10:7:18 | Entry | TestThrow.java:8:2:9:2 | { ... } |
 | TestThrow.java:7:10:7:18 | Normal Exit | TestThrow.java:7:10:7:18 | Exit |
-| TestThrow.java:7:10:7:18 | super(...) | TestThrow.java:7:10:7:18 | Normal Exit |
-| TestThrow.java:8:2:9:2 | { ... } | TestThrow.java:7:10:7:18 | super(...) |
+| TestThrow.java:8:2:8:2 | super(...) | TestThrow.java:7:10:7:18 | Normal Exit |
+| TestThrow.java:8:2:9:2 | { ... } | TestThrow.java:8:2:8:2 | super(...) |
 | TestThrow.java:11:15:11:21 | Entry | TestThrow.java:12:2:13:2 | { ... } |
 | TestThrow.java:11:15:11:21 | Normal Exit | TestThrow.java:11:15:11:21 | Exit |
 | TestThrow.java:12:2:13:2 | { ... } | TestThrow.java:11:15:11:21 | Normal Exit |

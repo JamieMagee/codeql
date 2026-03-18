@@ -110,6 +110,7 @@ B.java:
 #    1|   1: [Class] B
 #    2|     2: [Constructor] B
 #    2|       5: [BlockStmt] { ... }
+#    2|         0: [SuperConstructorInvocationStmt] super(...)
 #    3|         1: [EmptyStmt] ;
 #    6|     3: [Method] fn
 #    6|       3: [TypeAccess] void

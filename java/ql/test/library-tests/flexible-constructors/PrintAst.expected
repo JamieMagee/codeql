@@ -6,6 +6,7 @@ FlexibleConstructors.java:
 #    2|         0: [Parameter] msg
 #    2|           0: [TypeAccess] String
 #    2|       5: [BlockStmt] { ... }
+#    2|         0: [SuperConstructorInvocationStmt] super(...)
 #    3|         1: [ExprStmt] <Expr>;
 #    3|           0: [MethodCall] println(...)
 #    3|             -1: [VarAccess] System.out

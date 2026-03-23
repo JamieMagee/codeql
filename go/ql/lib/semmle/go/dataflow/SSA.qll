@@ -65,7 +65,7 @@ private predicate unresolvedIdentifier(Ident id, string name) {
  */
 class SsaVariable extends Definition {
   /** Gets the source variable corresponding to this SSA variable. */
-  SsaSourceVariable getSourceVariable() { this.definesAt(result, _, _) }
+  override SsaSourceVariable getSourceVariable() { this.definesAt(result, _, _) }
 
   /** Gets the (unique) definition of this SSA variable. */
   SsaDefinition getDefinition() { result = this }
@@ -98,7 +98,7 @@ class SsaVariable extends Definition {
   }
 
   /** Gets the location of this SSA variable. */
-  Location getLocation() { result = this.(SsaDefinition).getLocation() }
+  override Location getLocation() { result = this.(SsaDefinition).getLocation() }
 
   /**
    * DEPRECATED: Use `getLocation()` instead.
@@ -124,12 +124,7 @@ class SsaDefinition extends Definition {
   SsaVariable getVariable() { result = this }
 
   /** Gets the source variable defined by this definition. */
-  SsaSourceVariable getSourceVariable() { this.definesAt(result, _, _) }
-
-  /**
-   * Gets the basic block to which this definition belongs.
-   */
-  BasicBlock getBasicBlock() { this.definesAt(_, result, _) }
+  override SsaSourceVariable getSourceVariable() { this.definesAt(result, _, _) }
 
   /** Gets the innermost function or file to which this SSA definition belongs. */
   ControlFlow::Root getRoot() { result = this.getBasicBlock().getScope() }

@@ -93,9 +93,20 @@ private module Internal {
 
     /**
      * Holds if the `i`th node of basic block `bb` reads source variable `v`.
+     *
+     * We also add a synthetic uncertain read at the exit node of the declaring
+     * function for captured variables. This ensures that definitions of captured
+     * variables are included in the SSA graph even when the variable is not
+     * locally read in the declaring function (but may be read by a nested function).
      */
     predicate variableRead(BasicBlock bb, int i, SourceVariable v, boolean certain) {
       useAt(bb, i, v) and certain = true
+      or
+      v.isCaptured() and
+      bb.getScope() = v.getDeclaringFunction() and
+      bb.getLastNode().isExitNode() and
+      i = bb.length() - 1 and
+      certain = false
     }
   }
 }

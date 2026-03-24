@@ -1,2 +1,6 @@
 invalidModelRow
 testFailures
+| main.go:15:33:15:39 | SSA def(request) | Unexpected result: source="SSA def(request)" |
+| main.go:15:77:15:111 | comment | Missing result: source="definition of request" |
+| main.go:20:36:20:42 | SSA def(request) | Unexpected result: source="SSA def(request)" |
+| main.go:20:80:20:114 | comment | Missing result: source="definition of request" |

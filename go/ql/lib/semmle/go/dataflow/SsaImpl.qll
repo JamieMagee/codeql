@@ -76,6 +76,7 @@ private module Internal {
     any(IR::Instruction def | def.writes(v, _)).getRoot() != v.getDeclaringFunction()
   }
 
+  cached
   module SsaInput implements SsaImplCommon::InputSig<Location, BasicBlock> {
     class SourceVariable = SsaSourceVariable;
 
@@ -85,6 +86,7 @@ private module Internal {
      *
      * Certain writes are explicit definitions; uncertain writes are captures.
      */
+    cached
     predicate variableWrite(BasicBlock bb, int i, SourceVariable v, boolean certain) {
       defAt(bb, i, v) and certain = true
       or
@@ -99,6 +101,7 @@ private module Internal {
      * variables are included in the SSA graph even when the variable is not
      * locally read in the declaring function (but may be read by a nested function).
      */
+    cached
     predicate variableRead(BasicBlock bb, int i, SourceVariable v, boolean certain) {
       useAt(bb, i, v) and certain = true
       or

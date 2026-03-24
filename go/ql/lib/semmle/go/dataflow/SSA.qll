@@ -64,9 +64,6 @@ private predicate unresolvedIdentifier(Ident id, string name) {
  * An SSA variable.
  */
 class SsaVariable extends Definition {
-  /** Gets the source variable corresponding to this SSA variable. */
-  override SsaSourceVariable getSourceVariable() { this.definesAt(result, _, _) }
-
   /** Gets the (unique) definition of this SSA variable. */
   SsaDefinition getDefinition() { result = this }
 
@@ -85,21 +82,17 @@ class SsaVariable extends Definition {
   /** Gets a use that refers to this SSA variable. */
   IR::Instruction getAUse() { result = this.getAUseIn(_) }
 
-  /**
-   * Gets a textual representation of this element.
-   *
-   * The format is `kind@LINE:COL`, where `kind` is one of `def`, `capture`, or `phi`.
-   */
-  override string toString() {
-    exists(Location loc | loc = this.(SsaDefinition).getLocation() |
-      result =
-        this.(SsaDefinition).getKind() + "@" + loc.getStartLine() + ":" + loc.getStartColumn()
-    )
-  }
-
-  /** Gets the location of this SSA variable. */
-  override Location getLocation() { result = this.(SsaDefinition).getLocation() }
-
+  // /**
+  //  * Gets a textual representation of this element.
+  //  *
+  //  * The format is `kind@LINE:COL`, where `kind` is one of `def`, `capture`, or `phi`.
+  //  */
+  // override string toString() {
+  //   exists(Location loc | loc = this.(SsaDefinition).getLocation() |
+  //     result =
+  //       this.(SsaDefinition).getKind() + "@" + loc.getStartLine() + ":" + loc.getStartColumn()
+  //   )
+  // }
   /**
    * DEPRECATED: Use `getLocation()` instead.
    *
@@ -122,9 +115,6 @@ class SsaVariable extends Definition {
 class SsaDefinition extends Definition {
   /** Gets the SSA variable defined by this definition. */
   SsaVariable getVariable() { result = this }
-
-  /** Gets the source variable defined by this definition. */
-  override SsaSourceVariable getSourceVariable() { this.definesAt(result, _, _) }
 
   /** Gets the innermost function or file to which this SSA definition belongs. */
   ControlFlow::Root getRoot() { result = this.getBasicBlock().getScope() }
@@ -180,8 +170,7 @@ class SsaExplicitDefinition extends SsaDefinition, WriteDefinition {
   IR::Instruction getRhs() { this.getInstruction().writes(_, result) }
 
   override string getKind() { result = "def" }
-
-  override string toString() { result = "definition of " + this.getSourceVariable() }
+  // override string toString() { result = "definition of " + this.getSourceVariable() }
 }
 
 /** Provides a helper predicate for working with explicit SSA definitions. */
@@ -195,9 +184,7 @@ module SsaExplicitDefinition {
 /**
  * An SSA definition that does not correspond to an explicit variable definition.
  */
-abstract class SsaImplicitDefinition extends SsaDefinition {
-  override Location getLocation() { result = this.getBasicBlock().getLocation() }
-}
+abstract class SsaImplicitDefinition extends SsaDefinition { }
 
 /**
  * An SSA definition representing the capturing of an SSA-convertible variable
@@ -207,15 +194,8 @@ abstract class SsaImplicitDefinition extends SsaDefinition {
  * at any function call that may affect the value of the variable.
  */
 class SsaVariableCapture extends SsaImplicitDefinition, UncertainWriteDefinition {
-  override Location getLocation() {
-    exists(BasicBlock bb, int i | this.definesAt(_, bb, i) |
-      result = bb.getNode(i).getLocation()
-    )
-  }
-
   override string getKind() { result = "capture" }
-
-  override string toString() { result = "capture variable " + this.getSourceVariable() }
+  // override string toString() { result = "capture variable " + this.getSourceVariable() }
 }
 
 /**
@@ -247,10 +227,9 @@ class SsaPhiNode extends SsaPseudoDefinition, PhiNode {
   override SsaVariable getAnInput() { phiHasInputFromBlock(this, result, _) }
 
   override string getKind() { result = "phi" }
-
-  override string toString() {
-    result = this.getSourceVariable() + " = phi(" + this.ppInputs() + ")"
-  }
+  // override string toString() {
+  //   result = this.getSourceVariable() + " = phi(" + this.ppInputs() + ")"
+  // }
 }
 
 /**

@@ -1,4 +1,2 @@
 invalidModelRow
 testFailures
-| main.go:18:46:18:48 | SSA def(req) | Unexpected result: serverRequest="SSA def(req)" |
-| main.go:18:89:18:126 | comment | Missing result: serverRequest="definition of req" |

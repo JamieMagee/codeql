@@ -82,17 +82,18 @@ class SsaVariable extends Definition {
   /** Gets a use that refers to this SSA variable. */
   IR::Instruction getAUse() { result = this.getAUseIn(_) }
 
-  // /**
-  //  * Gets a textual representation of this element.
-  //  *
-  //  * The format is `kind@LINE:COL`, where `kind` is one of `def`, `capture`, or `phi`.
-  //  */
-  // override string toString() {
-  //   exists(Location loc | loc = this.(SsaDefinition).getLocation() |
-  //     result =
-  //       this.(SsaDefinition).getKind() + "@" + loc.getStartLine() + ":" + loc.getStartColumn()
-  //   )
-  // }
+  /**
+   * Gets a textual representation of this element.
+   *
+   * The format is `kind@LINE:COL`, where `kind` is one of `def`, `capture`, or `phi`.
+   */
+  override string toString() {
+    exists(Location loc | loc = this.(SsaDefinition).getLocation() |
+      result =
+        this.(SsaDefinition).getKind() + "@" + loc.getStartLine() + ":" + loc.getStartColumn()
+    )
+  }
+
   /**
    * DEPRECATED: Use `getLocation()` instead.
    *
@@ -170,7 +171,8 @@ class SsaExplicitDefinition extends SsaDefinition, WriteDefinition {
   IR::Instruction getRhs() { this.getInstruction().writes(_, result) }
 
   override string getKind() { result = "def" }
-  // override string toString() { result = "definition of " + this.getSourceVariable() }
+
+  override string toString() { result = "definition of " + this.getSourceVariable() }
 }
 
 /** Provides a helper predicate for working with explicit SSA definitions. */
@@ -195,7 +197,8 @@ abstract class SsaImplicitDefinition extends SsaDefinition { }
  */
 class SsaVariableCapture extends SsaImplicitDefinition, UncertainWriteDefinition {
   override string getKind() { result = "capture" }
-  // override string toString() { result = "capture variable " + this.getSourceVariable() }
+
+  override string toString() { result = "capture variable " + this.getSourceVariable() }
 }
 
 /**
@@ -227,9 +230,10 @@ class SsaPhiNode extends SsaPseudoDefinition, PhiNode {
   override SsaVariable getAnInput() { phiHasInputFromBlock(this, result, _) }
 
   override string getKind() { result = "phi" }
-  // override string toString() {
-  //   result = this.getSourceVariable() + " = phi(" + this.ppInputs() + ")"
-  // }
+
+  override string toString() {
+    result = this.getSourceVariable() + " = phi(" + this.ppInputs() + ")"
+  }
 }
 
 /**

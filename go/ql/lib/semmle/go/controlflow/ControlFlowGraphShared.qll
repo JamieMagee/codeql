@@ -4,7 +4,7 @@
  * Everything is wrapped in `GoCfg` to avoid name conflicts with the existing
  * CFG implementation during the transition.
  */
-overlay[local?]
+overlay[local]
 module;
 
 private import codeql.controlflow.ControlFlowGraph as CfgLib

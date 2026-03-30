@@ -66,7 +66,7 @@ module GoCfg {
       Callable() { exists(this.(Go::FuncDef).getBody()) }
     }
 
-    AstNode callableGetBody(Callable c) { result = c.(Go::FuncDef).getBody() }
+    AstNode callableGetBody(Callable c) { result = c }
 
     Callable getEnclosingCallable(AstNode node) {
       result = node and node instanceof Callable
@@ -648,7 +648,8 @@ module GoCfg {
       sliceExprStep(n1, n2) or
       selectorExprStep(n1, n2) or
       compositeLitStep(n1, n2) or
-      sendStmtStep(n1, n2)
+      sendStmtStep(n1, n2) or
+      funcDefStep(n1, n2)
     }
 
     /**
@@ -967,18 +968,57 @@ module GoCfg {
     private predicate selectorExprStep(PreControlFlowNode n1, PreControlFlowNode n2) {
       exists(Go::SelectorExpr sel |
         sel.getBase() instanceof Go::ValueExpr and
-        (implicitDerefCondition(sel.getBase()) or exists(Go::Field f | sel = f.getAReference())) and
+        (
+          implicitDerefCondition(sel.getBase()) or
+          exists(Go::Field f | sel = f.getAReference()) or
+          implicitFieldSelection(sel, _, _)
+        ) and
         (
           n1.isBefore(sel) and n2.isBefore(sel.getBase())
           or
+          // After base (no implicit-deref) → first implicit-field or In(sel)
           n1.isAfter(sel.getBase()) and
+          not implicitDerefCondition(sel.getBase()) and
           (
-            if implicitDerefCondition(sel.getBase())
-            then n2.isAdditional(sel.getBase(), "implicit-deref")
-            else n2.isIn(sel)
+            // Has implicit field reads: go to outermost (highest index)
+            exists(int maxIdx |
+              maxIdx = max(int i | implicitFieldSelection(sel, i, _)) and
+              n2.isAdditional(sel, "implicit-field:" + maxIdx.toString())
+            )
+            or
+            // No implicit field reads: go directly to In(sel)
+            not implicitFieldSelection(sel, _, _) and n2.isIn(sel)
           )
           or
-          n1.isAdditional(sel.getBase(), "implicit-deref") and n2.isIn(sel)
+          // After base (has implicit-deref) → implicit-deref node
+          n1.isAfter(sel.getBase()) and
+          implicitDerefCondition(sel.getBase()) and
+          n2.isAdditional(sel.getBase(), "implicit-deref")
+          or
+          // After implicit-deref → first implicit-field or In(sel)
+          n1.isAdditional(sel.getBase(), "implicit-deref") and
+          (
+            exists(int maxIdx |
+              maxIdx = max(int i | implicitFieldSelection(sel, i, _)) and
+              n2.isAdditional(sel, "implicit-field:" + maxIdx.toString())
+            )
+            or
+            not implicitFieldSelection(sel, _, _) and n2.isIn(sel)
+          )
+          or
+          // Between implicit field reads: descend from index i to i-1
+          exists(int i |
+            i > 1 and
+            implicitFieldSelection(sel, i, _) and
+            implicitFieldSelection(sel, i - 1, _) and
+            n1.isAdditional(sel, "implicit-field:" + i.toString()) and
+            n2.isAdditional(sel, "implicit-field:" + (i - 1).toString())
+          )
+          or
+          // Last implicit field read (index 1) → In(sel)
+          implicitFieldSelection(sel, 1, _) and
+          n1.isAdditional(sel, "implicit-field:1") and
+          n2.isIn(sel)
           or
           n1.isIn(sel) and n2.isAfter(sel)
         )
@@ -1290,6 +1330,101 @@ module GoCfg {
         n1.isAfter(s.getCall()) and n2.isIn(s)
         or
         n1.isIn(s) and n2.isAfter(s)
+      )
+    }
+
+    /**
+     * Function definition prologue and epilogue:
+     * - Prologue: Before(fd) → arg:0 → param-init:0 → arg:1 → param-init:1 → ...
+     *             → result-zero-init:0 → result-init:0 → ... → Before(body)
+     * - Epilogue: After(body) → result-read:0 → result-read:1 → ... → After(fd)
+     *
+     * `After(fd)` goes to `NormalExit(fd)` via the shared library's built-in step
+     * (since `callableGetBody(fd) = fd`).
+     */
+    private predicate funcDefStep(PreControlFlowNode n1, PreControlFlowNode n2) {
+      exists(Go::FuncDef fd | exists(fd.getBody()) |
+        // Before(fd) → first prologue node, or Before(body) if no prologue
+        n1.isBefore(fd) and
+        (
+          // Has parameters: start with arg:0
+          exists(fd.getParameter(0)) and n2.isAdditional(fd, "arg:0")
+          or
+          // No parameters, has result vars: start with result-zero-init:0
+          not exists(fd.getParameter(_)) and
+          exists(fd.getResultVar(0)) and
+          n2.isAdditional(fd, "result-zero-init:0")
+          or
+          // No parameters and no result vars: go directly to Before(body)
+          not exists(fd.getParameter(_)) and
+          not exists(fd.getResultVar(_)) and
+          n2.isBefore(fd.getBody())
+        )
+        or
+        // arg:i → param-init:i (for each parameter)
+        exists(int i | exists(fd.getParameter(i)) |
+          n1.isAdditional(fd, "arg:" + i.toString()) and
+          n2.isAdditional(fd, "param-init:" + i.toString())
+        )
+        or
+        // param-init:i → next: arg:(i+1), or result-zero-init:0, or Before(body)
+        exists(int i | exists(fd.getParameter(i)) |
+          n1.isAdditional(fd, "param-init:" + i.toString()) and
+          (
+            // Next parameter exists
+            exists(fd.getParameter(i + 1)) and
+            n2.isAdditional(fd, "arg:" + (i + 1).toString())
+            or
+            // No next parameter, has result vars: go to result-zero-init:0
+            not exists(fd.getParameter(i + 1)) and
+            exists(fd.getResultVar(0)) and
+            n2.isAdditional(fd, "result-zero-init:0")
+            or
+            // No next parameter and no result vars: go to Before(body)
+            not exists(fd.getParameter(i + 1)) and
+            not exists(fd.getResultVar(_)) and
+            n2.isBefore(fd.getBody())
+          )
+        )
+        or
+        // result-zero-init:j → result-init:j (for each result variable)
+        exists(int j | exists(fd.getResultVar(j)) |
+          n1.isAdditional(fd, "result-zero-init:" + j.toString()) and
+          n2.isAdditional(fd, "result-init:" + j.toString())
+        )
+        or
+        // result-init:j → next: result-zero-init:(j+1), or Before(body)
+        exists(int j | exists(fd.getResultVar(j)) |
+          n1.isAdditional(fd, "result-init:" + j.toString()) and
+          (
+            // Next result var exists
+            exists(fd.getResultVar(j + 1)) and
+            n2.isAdditional(fd, "result-zero-init:" + (j + 1).toString())
+            or
+            // No next result var: go to Before(body)
+            not exists(fd.getResultVar(j + 1)) and
+            n2.isBefore(fd.getBody())
+          )
+        )
+        or
+        // After(body) → first epilogue or After(fd) if no result vars
+        n1.isAfter(fd.getBody()) and
+        (
+          exists(fd.getResultVar(0)) and n2.isAdditional(fd, "result-read:0")
+          or
+          not exists(fd.getResultVar(_)) and n2.isAfter(fd)
+        )
+        or
+        // result-read:j → result-read:(j+1) or After(fd)
+        exists(int j | exists(fd.getResultVar(j)) |
+          n1.isAdditional(fd, "result-read:" + j.toString()) and
+          (
+            exists(fd.getResultVar(j + 1)) and
+            n2.isAdditional(fd, "result-read:" + (j + 1).toString())
+            or
+            not exists(fd.getResultVar(j + 1)) and n2.isAfter(fd)
+          )
+        )
       )
     }
   }

@@ -22,12 +22,9 @@ module IR {
    */
   class Instruction extends ControlFlow::Node {
     Instruction() {
-      this.isIn(_)
-      or
-      this.isAdditional(_, _)
-      or
-      this.isAfterTrue(_) and not this.isIn(_)
-      or
+      this.isIn(_) or
+      this.isAdditional(_, _) or
+      this.isAfterTrue(_) and not this.isIn(_) or
       this.isAfterFalse(_) and not this.isIn(_)
     }
 
@@ -202,6 +199,10 @@ module IR {
     override predicate isConst() { e.isConst() }
 
     override predicate isPlatformIndependentConstant() { e.isPlatformIndependentConstant() }
+
+    override string toString() { result = e.toString() }
+
+    override Location getLocation() { result = e.getLocation() }
   }
 
   /**
@@ -224,6 +225,10 @@ module IR {
   /**
    * Gets the effective base of a selector, index or slice expression, taking implicit dereferences
    * and implicit field reads into account.
+   *
+   * For a selector expression `b.f`, this could be the implicit dereference `*b`, or the implicit
+   * field access `b.Embedded` if the field `f` is promoted from an embedded type `Embedded`, or a
+   * combination of both `*(b.Embedded)`, or simply `b` if neither case applies.
    */
   private Instruction selectorBase(Expr e) {
     exists(ImplicitFieldReadInstruction fri | fri.getSelectorExpr() = e and fri.getIndex() = 1 |
@@ -238,15 +243,17 @@ module IR {
       or
       base = e.(SliceExpr).getBase()
     |
-      result = implicitDerefInstruction(base)
+      result = MkImplicitDeref(base)
       or
-      not exists(implicitDerefInstruction(base)) and
+      not exists(MkImplicitDeref(base)) and
       result = evalExprInstruction(base)
     )
   }
 
   /**
    * An IR instruction that reads a component from a composite object.
+   *
+   * This is either a field of a struct, or an element of an array, map, slice or string.
    */
   class ComponentReadInstruction extends ReadInstruction {
     ComponentReadInstruction() {
@@ -257,7 +264,7 @@ module IR {
         not e.(SelectorExpr).getSelector() = any(Method method).getAReference()
       )
       or
-      this instanceof ImplicitFieldReadInstruction
+      this instanceof MkImplicitFieldSelection
     }
 
     /** Gets the instruction computing the base value on which the field or element is read. */
@@ -270,6 +277,9 @@ module IR {
 
   /**
    * An IR instruction that reads the value of a field.
+   *
+   * On databases with incomplete type information, method expressions may sometimes be
+   * misclassified as field reads.
    */
   class FieldReadInstruction extends ComponentReadInstruction {
     SelectorExpr e;
@@ -281,9 +291,7 @@ module IR {
       index = 0 and
       field.getAReference() = e.getSelector()
       or
-      this.(ImplicitFieldReadInstruction).getSelectorExpr() = e and
-      this.(ImplicitFieldReadInstruction).getIndex() = index and
-      this.(ImplicitFieldReadInstruction).getField() = field
+      this = MkImplicitFieldSelection(e, index, field)
     }
 
     /** Gets the `SelectorExpr` of this field read. */
@@ -306,9 +314,9 @@ module IR {
         fri.getSelectorExpr() = e and fri.getIndex() = pragma[only_bind_into](index + 1)
       ) and
       (
-        result = implicitDerefInstruction(e.getBase())
+        result = MkImplicitDeref(e.getBase())
         or
-        not exists(implicitDerefInstruction(e.getBase())) and
+        not exists(MkImplicitDeref(e.getBase())) and
         result = evalExprInstruction(e.getBase())
       )
     }
@@ -319,50 +327,24 @@ module IR {
   }
 
   /**
-   * An IR instruction for an implicit field read as part of reading a promoted field.
+   * An IR instruction for an implicit field read as part of reading a
+   * promoted field.
+   *
+   * If the field that is being implicitly read has a pointer type then this
+   * instruction represents an implicit dereference of it.
    */
-  class ImplicitFieldReadInstruction extends Instruction {
-    SelectorExpr sel;
-    int idx;
-    Field fld;
+  class ImplicitFieldReadInstruction extends FieldReadInstruction, MkImplicitFieldSelection {
+    ImplicitFieldReadInstruction() { this = MkImplicitFieldSelection(e, index, field) }
 
-    ImplicitFieldReadInstruction() {
-      this.isAdditional(sel, "implicit-field:" + idx.toString()) and
-      GoCfg::implicitFieldSelection(sel, idx, fld)
-    }
+    override predicate reads(ValueEntity v) { v = field }
 
-    /** Gets the `SelectorExpr` for which this is an implicit field read. */
-    SelectorExpr getSelectorExpr() { result = sel }
+    override Type getResultType() { result = lookThroughPointerType(field.getType()) }
 
-    /** Gets the index of this implicit field read. */
-    int getIndex() { result = idx }
+    override ControlFlow::Root getRoot() { result.isRootOf(e) }
 
-    /** Gets the field being read. */
-    Field getField() { result = fld }
+    override string toString() { result = "implicit read of field " + field.toString() }
 
-    Instruction getBaseInstruction() {
-      exists(ImplicitFieldReadInstruction fri |
-        fri.getSelectorExpr() = sel and fri.getIndex() = pragma[only_bind_into](idx + 1)
-      |
-        result = fri
-      )
-      or
-      not exists(ImplicitFieldReadInstruction fri |
-        fri.getSelectorExpr() = sel and fri.getIndex() = pragma[only_bind_into](idx + 1)
-      ) and
-      (
-        result = implicitDerefInstruction(sel.getBase())
-        or
-        not exists(implicitDerefInstruction(sel.getBase())) and
-        result = evalExprInstruction(sel.getBase())
-      )
-    }
-
-    override predicate reads(ValueEntity v) { v = fld }
-
-    override Type getResultType() { result = lookThroughPointerType(fld.getType()) }
-
-    override ControlFlow::Root getRoot() { result.isRootOf(sel) }
+    override Location getLocation() { result = e.getBase().getLocation() }
   }
 
   /**
@@ -374,8 +356,10 @@ module IR {
 
     MethodReadInstruction() { e.getSelector() = method.getAReference() }
 
+    /** Gets the instruction computing the receiver value on which the method is looked up. */
     Instruction getReceiver() { result = selectorBase(e) }
 
+    /** Gets the method being looked up. */
     Method getMethod() { result = method }
 
     override predicate readsMethod(Instruction receiver, Method m) {
@@ -389,6 +373,7 @@ module IR {
   class ElementReadInstruction extends ComponentReadInstruction, EvalInstruction {
     override IndexExpr e;
 
+    /** Gets the instruction computing the index of the element being looked up. */
     Instruction getIndex() { result = evalExprInstruction(e.getIndex()) }
 
     override predicate readsElement(Instruction base, Instruction index) {
@@ -402,18 +387,22 @@ module IR {
   class SliceInstruction extends EvalInstruction {
     override SliceExpr e;
 
+    /** Gets the instruction computing the base value from which the slice is constructed. */
     Instruction getBase() { result = selectorBase(e) }
 
+    /** Gets the instruction computing the lower bound of the slice. */
     Instruction getLow() {
       result = evalExprInstruction(e.getLow()) or
       result = implicitLowerSliceBoundInstruction(e)
     }
 
+    /** Gets the instruction computing the upper bound of the slice. */
     Instruction getHigh() {
       result = evalExprInstruction(e.getHigh()) or
       result = implicitUpperSliceBoundInstruction(e)
     }
 
+    /** Gets the instruction computing the capacity of the slice. */
     Instruction getMax() {
       result = evalExprInstruction(e.getMax()) or
       result = implicitMaxSliceBoundInstruction(e)
@@ -438,10 +427,13 @@ module IR {
       lhs = MkLiteralElementTarget(this) and initialization = true
     }
 
+    /** Gets the target to which this instruction writes. */
     WriteTarget getLhs() { result = lhs }
 
+    /** Holds if this instruction initializes a literal. */
     predicate isInitialization() { initialization = true }
 
+    /** Gets the instruction computing the value this instruction writes. */
     Instruction getRhs() { none() }
 
     override predicate writes(ValueEntity v, Instruction rhs) {
@@ -453,16 +445,16 @@ module IR {
   /**
    * An IR instruction that initializes a component of a composite literal.
    */
-  class InitLiteralComponentInstruction extends WriteInstruction {
+  class InitLiteralComponentInstruction extends WriteInstruction, MkLiteralElementInitNode {
     CompositeLit lit;
-    int litIdx;
+    int i;
     Expr elt;
 
     InitLiteralComponentInstruction() {
-      this.isAdditional(elt, "lit-init") and
-      elt = lit.getElement(litIdx)
+      this = MkLiteralElementInitNode(elt) and elt = lit.getElement(i)
     }
 
+    /** Gets the instruction allocating the composite literal. */
     Instruction getBase() { result = evalExprInstruction(lit) }
 
     override Instruction getRhs() {
@@ -471,6 +463,10 @@ module IR {
     }
 
     override ControlFlow::Root getRoot() { result.isRootOf(elt) }
+
+    override string toString() { result = "init of " + elt }
+
+    override Location getLocation() { result = elt.getLocation() }
   }
 
   /**
@@ -479,13 +475,15 @@ module IR {
   class InitLiteralStructFieldInstruction extends InitLiteralComponentInstruction {
     override StructLit lit;
 
+    /** Gets the name of the initialized field. */
     pragma[nomagic]
     string getFieldName() {
       if elt instanceof KeyValueExpr
       then result = elt.(KeyValueExpr).getKey().(Ident).getName()
-      else pragma[only_bind_out](lit.getStructType()).hasOwnField(litIdx, result, _, _)
+      else pragma[only_bind_out](lit.getStructType()).hasOwnField(i, result, _, _)
     }
 
+    /** Gets the initialized field. */
     Field getField() {
       result.getDeclaringType() = lit.getStructType() and
       result.getName() = this.getFieldName()
@@ -507,59 +505,85 @@ module IR {
       )
     }
 
+    /** Gets the instruction computing the index of the initialized element. */
     Instruction getIndex() {
       result = evalExprInstruction(elt.(KeyValueExpr).getKey())
       or
-      result.(ImplicitLiteralElementIndexInstruction).isAdditional(elt, "lit-index")
+      result = MkImplicitLiteralElementIndex(elt)
     }
   }
 
+  /**
+   * An IR instruction that initializes an element of an array literal.
+   */
   class InitLiteralArrayElementInstruction extends InitLiteralElementInstruction {
     override ArrayType literalType;
   }
 
+  /**
+   * An IR instruction that initializes an element of a slice literal.
+   */
   class InitLiteralSliceElementInstruction extends InitLiteralElementInstruction {
     override SliceType literalType;
   }
 
+  /**
+   * An IR instruction that initializes an element of a map literal.
+   */
   class InitLiteralMapElementInstruction extends InitLiteralElementInstruction {
     override MapType literalType;
   }
 
+  /**
+   * An IR instruction that writes to a field.
+   */
   class FieldWriteInstruction extends WriteInstruction {
     override FieldTarget lhs;
 
+    /** Gets the instruction computing the base value on which the field is written. */
     Instruction getBase() { result = lhs.getBase() }
 
+    /** Gets the field being written. */
     Field getField() { result = lhs.getField() }
 
     override predicate writesField(Instruction base, Field f, Instruction rhs) {
-      this.getBase() = base and this.getField() = f and this.getRhs() = rhs
+      this.getBase() = base and
+      this.getField() = f and
+      this.getRhs() = rhs
     }
   }
 
+  /**
+   * An IR instruction that writes to an element of an array, slice, or map.
+   */
   class ElementWriteInstruction extends WriteInstruction {
     override ElementTarget lhs;
 
+    /** Gets the instruction computing the base value on which the field is written. */
     Instruction getBase() { result = lhs.getBase() }
 
+    /** Gets the instruction computing the element index being written. */
     Instruction getIndex() { result = lhs.getIndex() }
 
     override predicate writesElement(Instruction base, Instruction index) {
-      this.getBase() = base and this.getIndex() = index
+      this.getBase() = base and
+      this.getIndex() = index
     }
   }
 
+  /** Holds if `lit` does not specify any explicit keys. */
   private predicate noExplicitKeys(CompositeLit lit) {
     not lit.getAnElement() instanceof KeyValueExpr
   }
 
+  /** Gets the index of the `i`th element in (array or slice) literal `lit`. */
   private int getElementIndex(CompositeLit lit, int i) {
     (
       lit.getType().getUnderlyingType() instanceof ArrayType or
       lit.getType().getUnderlyingType() instanceof SliceType
     ) and
     exists(Expr elt | elt = lit.getElement(i) |
+      // short-circuit computation for literals without any explicit keys
       noExplicitKeys(lit) and result = i
       or
       result = elt.(KeyValueExpr).getKey().getIntValue()
@@ -576,10 +600,10 @@ module IR {
   /**
    * An IR instruction computing the implicit index of an element in an array or slice literal.
    */
-  class ImplicitLiteralElementIndexInstruction extends Instruction {
+  class ImplicitLiteralElementIndexInstruction extends Instruction, MkImplicitLiteralElementIndex {
     Expr elt;
 
-    ImplicitLiteralElementIndexInstruction() { this.isAdditional(elt, "lit-index") }
+    ImplicitLiteralElementIndexInstruction() { this = MkImplicitLiteralElementIndex(elt) }
 
     override Type getResultType() { result instanceof IntType }
 
@@ -596,25 +620,20 @@ module IR {
     override predicate isPlatformIndependentConstant() { any() }
 
     override predicate isConst() { any() }
+
+    override string toString() { result = "element index" }
+
+    override Location getLocation() { result = elt.getLocation() }
   }
 
   /**
    * An instruction assigning to a variable or field.
    */
-  class AssignInstruction extends WriteInstruction {
+  class AssignInstruction extends WriteInstruction, MkAssignNode {
     AstNode assgn;
     int i;
 
-    AssignInstruction() {
-      this.isAdditional(assgn, "assign:" + i.toString()) and
-      (
-        exists(assgn.(Assignment).getLhs(i))
-        or
-        exists(assgn.(ValueSpec).getNameExpr(i))
-        or
-        assgn instanceof RangeStmt and i in [0, 1]
-      )
-    }
+    AssignInstruction() { this = MkAssignNode(assgn, i) }
 
     override Instruction getRhs() {
       exists(SimpleAssignStmt a | a = assgn |
@@ -626,57 +645,51 @@ module IR {
         spec.getNumName() = spec.getNumInit() and
         result = evalExprInstruction(spec.getInit(i))
         or
-        result =
-          implicitInitInstruction(any(ValueEntity v | spec.getNameExpr(i) = v.getDeclaration()))
+        result = MkZeroInitNode(any(ValueEntity v | spec.getNameExpr(i) = v.getDeclaration()))
       )
       or
-      result.(EvalCompoundAssignRhsInstruction).isAdditional(assgn, "compound-rhs")
+      result = MkCompoundAssignRhsNode(assgn)
       or
-      result.(ExtractTupleElementInstruction).isAdditional(assgn, "extract:" + i.toString())
+      result = MkExtractNode(assgn, i)
     }
 
     override ControlFlow::Root getRoot() { result.isRootOf(assgn) }
+
+    override string toString() { result = "assignment to " + this.getLhs() }
+
+    override Location getLocation() { result = this.getLhs().getLocation() }
   }
 
-  class EvalCompoundAssignRhsInstruction extends Instruction {
+  /** An instruction computing the value of the right-hand side of a compound assignment. */
+  class EvalCompoundAssignRhsInstruction extends Instruction, MkCompoundAssignRhsNode {
     CompoundAssignStmt assgn;
 
-    EvalCompoundAssignRhsInstruction() { this.isAdditional(assgn, "compound-rhs") }
+    EvalCompoundAssignRhsInstruction() { this = MkCompoundAssignRhsNode(assgn) }
 
+    /** Gets the underlying assignment of this instruction. */
     CompoundAssignStmt getAssignment() { result = assgn }
 
     override Type getResultType() { result = assgn.getRhs().getType() }
 
     override ControlFlow::Root getRoot() { result.isRootOf(assgn) }
+
+    override string toString() { result = assgn.toString() }
+
+    override Location getLocation() { result = assgn.getLocation() }
   }
 
-  class ExtractTupleElementInstruction extends Instruction {
+  /**
+   * An instruction selecting one of multiple values returned by a function, or either the key
+   * or the value of the iterator in a range loop, or the result or success value from a type
+   * assertion.
+   */
+  class ExtractTupleElementInstruction extends Instruction, MkExtractNode {
     AstNode s;
     int i;
 
-    ExtractTupleElementInstruction() {
-      this.isAdditional(s, "extract:" + i.toString()) and
-      (
-        exists(s.(Assignment).getLhs(i))
-        or
-        exists(s.(ValueSpec).getNameExpr(i))
-        or
-        s instanceof RangeStmt and i in [0, 1]
-        or
-        exists(s.(ReturnStmt).getEnclosingFunction().getType().(SignatureType).getResultType(i))
-        or
-        exists(
-          s.(CallExpr)
-              .getArgument(0)
-              .stripParens()
-              .(CallExpr)
-              .getType()
-              .(TupleType)
-              .getComponentType(i)
-        )
-      )
-    }
+    ExtractTupleElementInstruction() { this = MkExtractNode(s, i) }
 
+    /** Gets the instruction computing the tuple value from which one value is extracted. */
     Instruction getBase() {
       exists(Expr baseExpr |
         baseExpr = s.(Assignment).getRhs() or
@@ -685,13 +698,14 @@ module IR {
         result = evalExprInstruction(baseExpr)
       )
       or
-      result.(GetNextEntryInstruction).isAdditional(s, "next")
+      result = MkNextNode(s)
       or
       result = evalExprInstruction(s.(ReturnStmt).getExpr())
       or
       result = evalExprInstruction(s.(CallExpr).getArgument(0).stripParens())
     }
 
+    /** Holds if this extracts the `idx`th value of the result of `base`. */
     predicate extractsElement(Instruction base, int idx) { base = this.getBase() and idx = i }
 
     override Type getResultType() {
@@ -706,42 +720,51 @@ module IR {
             rangeType.(PointerType).getBaseType().getUnderlyingType().(ArrayType).getElementType() or
           baseType = rangeType.(SliceType).getElementType()
         |
-          i = 0 and result instanceof IntType
+          i = 0 and
+          result instanceof IntType
           or
-          i = 1 and result = baseType
+          i = 1 and
+          result = baseType
         )
         or
         rangeType instanceof StringType and
         (
-          i = 0 and result instanceof IntType
+          i = 0 and
+          result instanceof IntType
           or
           result = Builtin::rune().getType()
         )
         or
         exists(MapType map | map = rangeType |
-          i = 0 and result = map.getKeyType()
+          i = 0 and
+          result = map.getKeyType()
           or
-          i = 1 and result = map.getValueType()
+          i = 1 and
+          result = map.getValueType()
         )
         or
-        i = 0 and result = rangeType.(RecvChanType).getElementType()
+        i = 0 and
+        result = rangeType.(RecvChanType).getElementType()
         or
-        i = 0 and result = rangeType.(SendRecvChanType).getElementType()
+        i = 0 and
+        result = rangeType.(SendRecvChanType).getElementType()
       )
     }
 
     override ControlFlow::Root getRoot() { result.isRootOf(s) }
+
+    override string toString() { result = s + "[" + i + "]" }
+
+    override Location getLocation() { result = s.getLocation() }
   }
 
-  class EvalImplicitInitInstruction extends Instruction {
+  /**
+   * An instruction that computes the zero value for a variable or constant.
+   */
+  class EvalImplicitInitInstruction extends Instruction, MkZeroInitNode {
     ValueEntity v;
-    int idx;
-    ValueSpec spec;
 
-    EvalImplicitInitInstruction() {
-      this.isAdditional(spec, "zero-init:" + idx.toString()) and
-      spec.getNameExpr(idx) = v.getDeclaration()
-    }
+    EvalImplicitInitInstruction() { this = MkZeroInitNode(v) }
 
     override Type getResultType() { result = v.getType() }
 
@@ -773,61 +796,104 @@ module IR {
     override predicate isConst() { any() }
 
     override predicate isPlatformIndependentConstant() { any() }
+
+    override string toString() { result = "zero value for " + v }
+
+    override Location getLocation() { result = v.getDeclaration().getLocation() }
   }
 
-  class DeclareFunctionInstruction extends Instruction {
+  /**
+   * An instruction that corresponds to the declaration of a function.
+   */
+  class DeclareFunctionInstruction extends Instruction, MkFuncDeclNode {
     FuncDecl fd;
 
-    DeclareFunctionInstruction() { this.isIn(fd) and fd instanceof FuncDecl }
+    DeclareFunctionInstruction() { this = MkFuncDeclNode(fd) }
 
     override Type getResultType() { result = fd.getType() }
+
+    override string toString() { result = fd.toString() }
+
+    override Location getLocation() { result = fd.getLocation() }
   }
 
-  class DeferInstruction extends Instruction {
+  /**
+   * An instruction that corresponds to a `defer` statement.
+   */
+  class DeferInstruction extends Instruction, MkDeferNode {
     DeferStmt defer;
 
-    DeferInstruction() { this.isIn(defer) }
+    DeferInstruction() { this = MkDeferNode(defer) }
 
     override ControlFlow::Root getRoot() { result.isRootOf(defer) }
+
+    override string toString() { result = defer.toString() }
+
+    override Location getLocation() { result = defer.getLocation() }
   }
 
-  class GoInstruction extends Instruction {
+  /**
+   * An instruction that corresponds to a `go` statement.
+   */
+  class GoInstruction extends Instruction, MkGoNode {
     GoStmt go;
 
-    GoInstruction() { this.isIn(go) }
+    GoInstruction() { this = MkGoNode(go) }
 
     override ControlFlow::Root getRoot() { result.isRootOf(go) }
+
+    override string toString() { result = go.toString() }
+
+    override Location getLocation() { result = go.getLocation() }
   }
 
-  class IncDecInstruction extends WriteInstruction {
+  /**
+   * An instruction that corresponds to an increment or decrement statement.
+   */
+  class IncDecInstruction extends WriteInstruction, MkIncDecNode {
     IncDecStmt ids;
 
-    IncDecInstruction() { this.isIn(ids) }
+    IncDecInstruction() { this = MkIncDecNode(ids) }
 
-    override Instruction getRhs() {
-      result.(EvalIncDecRhsInstruction).isAdditional(ids, "incdec-rhs")
-    }
+    override Instruction getRhs() { result = MkIncDecRhs(ids) }
 
     override ControlFlow::Root getRoot() { result.isRootOf(ids) }
+
+    override string toString() { result = ids.toString() }
+
+    override Location getLocation() { result = ids.getLocation() }
   }
 
-  class EvalIncDecRhsInstruction extends Instruction {
+  /**
+   * An instruction that computes the (implicit) right-hand side of an increment or
+   * decrement statement.
+   */
+  class EvalIncDecRhsInstruction extends Instruction, MkIncDecRhs {
     IncDecStmt ids;
 
-    EvalIncDecRhsInstruction() { this.isAdditional(ids, "incdec-rhs") }
+    EvalIncDecRhsInstruction() { this = MkIncDecRhs(ids) }
 
+    /** Gets the corresponding increment or decrement statement. */
     IncDecStmt getStmt() { result = ids }
 
     override Type getResultType() { result = ids.getOperand().getType() }
 
     override ControlFlow::Root getRoot() { result.isRootOf(ids) }
+
+    override string toString() { result = "rhs of " + ids }
+
+    override Location getLocation() { result = ids.getLocation() }
   }
 
-  class EvalImplicitOneInstruction extends Instruction {
+  /**
+   * An instruction computing the implicit operand `1` in an increment or decrement statement.
+   */
+  class EvalImplicitOneInstruction extends Instruction, MkImplicitOne {
     IncDecStmt ids;
 
-    EvalImplicitOneInstruction() { this.isAdditional(ids, "implicit-one") }
+    EvalImplicitOneInstruction() { this = MkImplicitOne(ids) }
 
+    /** Gets the corresponding increment or decrement statement. */
     IncDecStmt getStmt() { result = ids }
 
     override Type getResultType() { result = ids.getOperand().getType() }
@@ -841,184 +907,205 @@ module IR {
     override predicate isConst() { any() }
 
     override predicate isPlatformIndependentConstant() { any() }
+
+    override string toString() { result = "1" }
+
+    override Location getLocation() { result = ids.getLocation() }
   }
 
-  class ReturnInstruction extends Instruction {
+  /**
+   * An instruction corresponding to a return from a function.
+   */
+  class ReturnInstruction extends Instruction, MkReturnNode {
     ReturnStmt ret;
 
-    ReturnInstruction() { this.isAdditional(ret, "return") }
+    ReturnInstruction() { this = MkReturnNode(ret) }
 
+    /** Gets the corresponding `ReturnStmt`. */
     ReturnStmt getReturnStmt() { result = ret }
 
-    predicate returnsMultipleResults() {
-      exists(ExtractTupleElementInstruction ext | ext.isAdditional(ret, _))
-      or
-      ret.getNumExpr() > 1
-    }
+    /** Holds if this statement returns multiple results. */
+    predicate returnsMultipleResults() { exists(MkExtractNode(ret, _)) or ret.getNumExpr() > 1 }
 
+    /** Gets the instruction whose result is the (unique) result returned by this statement. */
     Instruction getResult() {
       not this.returnsMultipleResults() and
       result = evalExprInstruction(ret.getExpr())
     }
 
+    /** Gets the instruction whose result is the `i`th result returned by this statement. */
     Instruction getResult(int i) {
-      result.isAdditional(ret, _) and
-      result.(ExtractTupleElementInstruction).extractsElement(_, i)
+      result = MkExtractNode(ret, i)
       or
-      not exists(ExtractTupleElementInstruction ext | ext.isAdditional(ret, _)) and
+      not exists(MkExtractNode(ret, _)) and
       result = evalExprInstruction(ret.getExpr(i))
     }
 
     override ControlFlow::Root getRoot() { result.isRootOf(ret) }
+
+    override string toString() { result = ret.toString() }
+
+    override Location getLocation() { result = ret.getLocation() }
   }
 
-  class WriteResultInstruction extends WriteInstruction {
+  /**
+   * An instruction that represents the implicit assignment to a result variable
+   * performed by a return statement.
+   */
+  class WriteResultInstruction extends WriteInstruction, MkResultWriteNode {
     ResultVariable var;
-    int idx;
-    ReturnStmt retStmt;
+    int i;
+    ReturnInstruction ret;
 
     WriteResultInstruction() {
-      this.isAdditional(retStmt, "result-write:" + idx.toString()) and
-      var = retStmt.getEnclosingFunction().getResultVar(idx) and
-      exists(retStmt.getAnExpr())
+      exists(ReturnStmt retstmt |
+        this = MkResultWriteNode(var, i, retstmt) and
+        ret = MkReturnNode(retstmt)
+      )
     }
 
-    private ReturnInstruction getReturnInstruction() {
-      result.(ReturnInstruction).isAdditional(retStmt, "return")
-    }
+    override Instruction getRhs() { result = ret.getResult(i) }
 
-    override Instruction getRhs() { result = this.getReturnInstruction().getResult(idx) }
-
+    /** Gets the result variable being assigned. */
     ResultVariable getResultVariable() { result = var }
 
     override Type getResultType() { result = var.getType() }
 
     override ControlFlow::Root getRoot() { var = result.(FuncDef).getAResultVar() }
+
+    override string toString() { result = "implicit write of " + var }
+
+    override Location getLocation() { result = ret.getResult(i).getLocation() }
   }
 
-  class ReadResultInstruction extends Instruction {
+  /**
+   * An instruction that reads the final value of a result variable upon returning
+   * from a function.
+   */
+  class ReadResultInstruction extends Instruction, MkResultReadNode {
     ResultVariable var;
-    int idx;
-    FuncDef fd;
 
-    ReadResultInstruction() {
-      this.isAdditional(fd, "result-read:" + idx.toString()) and
-      var = fd.getResultVar(idx)
-    }
+    ReadResultInstruction() { this = MkResultReadNode(var) }
 
     override predicate reads(ValueEntity v) { v = var }
 
     override Type getResultType() { result = var.getType() }
 
     override ControlFlow::Root getRoot() { var = result.(FuncDef).getAResultVar() }
+
+    override string toString() { result = "implicit read of " + var }
+
+    override Location getLocation() { result = var.getDeclaration().getLocation() }
   }
 
-  class SendInstruction extends Instruction {
+  /**
+   * An instruction corresponding to a `select` statement.
+   */
+  class SelectInstruction extends Instruction, MkSelectNode {
+    SelectStmt sel;
+
+    SelectInstruction() { this = MkSelectNode(sel) }
+
+    override ControlFlow::Root getRoot() { result.isRootOf(sel) }
+
+    override string toString() { result = sel.toString() }
+
+    override Location getLocation() { result = sel.getLocation() }
+  }
+
+  /**
+   * An instruction corresponding to a send statement.
+   */
+  class SendInstruction extends Instruction, MkSendNode {
     SendStmt send;
 
-    SendInstruction() { this.isAdditional(send, "send") }
+    SendInstruction() { this = MkSendNode(send) }
 
     override ControlFlow::Root getRoot() { result.isRootOf(send) }
+
+    override string toString() { result = send.toString() }
+
+    override Location getLocation() { result = send.getLocation() }
   }
 
-  class InitParameterInstruction extends WriteInstruction {
+  /**
+   * An instruction initializing a parameter to the corresponding argument.
+   */
+  class InitParameterInstruction extends WriteInstruction, MkParameterInit {
     Parameter parm;
-    int idx;
-    FuncDef fd;
 
-    InitParameterInstruction() {
-      this.isAdditional(fd, "param-init:" + idx.toString()) and
-      parm = fd.getParameter(idx)
-    }
+    InitParameterInstruction() { this = MkParameterInit(parm) }
 
-    override Instruction getRhs() {
-      result.(ReadArgumentInstruction).isAdditional(fd, "arg:" + idx.toString())
-    }
+    override Instruction getRhs() { result = MkArgumentNode(parm) }
 
     override ControlFlow::Root getRoot() { result = parm.getFunction() }
+
+    override string toString() { result = "initialization of " + parm }
+
+    override Location getLocation() { result = parm.getDeclaration().getLocation() }
   }
 
-  class ReadArgumentInstruction extends Instruction {
+  /**
+   * An instruction reading the value of a function argument.
+   */
+  class ReadArgumentInstruction extends Instruction, MkArgumentNode {
     Parameter parm;
-    int idx;
-    FuncDef fd;
 
-    ReadArgumentInstruction() {
-      this.isAdditional(fd, "arg:" + idx.toString()) and
-      parm = fd.getParameter(idx)
-    }
+    ReadArgumentInstruction() { this = MkArgumentNode(parm) }
 
     override Type getResultType() { result = parm.getType() }
 
     override ControlFlow::Root getRoot() { result = parm.getFunction() }
+
+    override string toString() { result = "argument corresponding to " + parm }
+
+    override Location getLocation() { result = parm.getDeclaration().getLocation() }
   }
 
-  class InitResultInstruction extends WriteInstruction {
+  /**
+   * An instruction initializing a result variable to its zero value.
+   */
+  class InitResultInstruction extends WriteInstruction, MkResultInit {
     ResultVariable res;
-    int idx;
-    FuncDef fd;
 
-    InitResultInstruction() {
-      this.isAdditional(fd, "result-init:" + idx.toString()) and
-      res = fd.getResultVar(idx)
-    }
+    InitResultInstruction() { this = MkResultInit(res) }
 
-    override Instruction getRhs() {
-      result.(ResultZeroInitInstruction).isAdditional(fd, "result-zero-init:" + idx.toString())
-    }
+    override Instruction getRhs() { result = MkZeroInitNode(res) }
 
     override ControlFlow::Root getRoot() { result = res.getFunction() }
+
+    override string toString() { result = "initialization of " + res }
+
+    override Location getLocation() { result = res.getDeclaration().getLocation() }
   }
 
-  private class ResultZeroInitInstruction extends Instruction {
-    ResultVariable res;
-    int idx;
-    FuncDef fd;
-
-    ResultZeroInitInstruction() {
-      this.isAdditional(fd, "result-zero-init:" + idx.toString()) and
-      res = fd.getResultVar(idx)
-    }
-
-    override Type getResultType() { result = res.getType() }
-
-    override ControlFlow::Root getRoot() { result.isRootOf(fd) }
-
-    override int getIntValue() {
-      res.getType().getUnderlyingType() instanceof IntegerType and result = 0
-    }
-
-    override float getFloatValue() {
-      res.getType().getUnderlyingType() instanceof FloatType and result = 0.0
-    }
-
-    override string getStringValue() {
-      res.getType().getUnderlyingType() instanceof StringType and result = ""
-    }
-
-    override boolean getBoolValue() {
-      res.getType().getUnderlyingType() instanceof BoolType and result = false
-    }
-
-    override predicate isConst() { any() }
-
-    override predicate isPlatformIndependentConstant() { any() }
-  }
-
-  class GetNextEntryInstruction extends Instruction {
+  /**
+   * An instruction that gets the next key-value pair in a range loop.
+   */
+  class GetNextEntryInstruction extends Instruction, MkNextNode {
     RangeStmt rs;
 
-    GetNextEntryInstruction() { this.isAdditional(rs, "next") }
+    GetNextEntryInstruction() { this = MkNextNode(rs) }
 
+    /**
+     * Gets the instruction computing the value whose key-value pairs this instruction reads.
+     */
     Instruction getDomain() { result = evalExprInstruction(rs.getDomain()) }
 
     override ControlFlow::Root getRoot() { result.isRootOf(rs) }
+
+    override string toString() { result = "next key-value pair in range" }
+
+    override Location getLocation() { result = rs.getDomain().getLocation() }
   }
 
-  class EvalImplicitTrueInstruction extends Instruction {
-    ExpressionSwitchStmt stmt;
+  /**
+   * An instruction computing the implicit `true` value in an expression-less `switch` statement.
+   */
+  class EvalImplicitTrueInstruction extends Instruction, MkImplicitTrue {
+    Stmt stmt;
 
-    EvalImplicitTrueInstruction() { this.isAdditional(stmt, "implicit-true") }
+    EvalImplicitTrueInstruction() { this = MkImplicitTrue(stmt) }
 
     override Type getResultType() { result instanceof BoolType }
 
@@ -1031,37 +1118,91 @@ module IR {
     override predicate isConst() { any() }
 
     override predicate isPlatformIndependentConstant() { any() }
+
+    override string toString() { result = "true" }
+
+    override Location getLocation() { result = stmt.getLocation() }
   }
 
-  class CaseInstruction extends Instruction {
+  /**
+   * An instruction corresponding to the implicit comparison or type check performed by an
+   * expression in a `case` clause.
+   *
+   * For example, consider this `switch` statement:
+   *
+   * ```go
+   * switch x {
+   * case 2, y+1:
+   *   ...
+   * }
+   * ```
+   *
+   * The expressions `2` and `y+1` are implicitly compared to `x`. These comparisons are
+   * represented by case instructions.
+   */
+  class CaseInstruction extends Instruction, MkCaseCheckNode {
     CaseClause cc;
     int i;
 
-    CaseInstruction() {
-      this.isAdditional(cc, "case-check:" + i.toString()) and
-      exists(cc.getExpr(i))
-    }
+    CaseInstruction() { this = MkCaseCheckNode(cc, i) }
 
     override ControlFlow::Root getRoot() { result.isRootOf(cc) }
+
+    override string toString() { result = "case " + cc.getExpr(i) }
+
+    override Location getLocation() { result = cc.getExpr(i).getLocation() }
   }
 
-  class TypeSwitchImplicitVariableInstruction extends Instruction {
+  /**
+   * An instruction corresponding to the implicit declaration of the variable
+   * `lv` in case clause `cc` and its assignment of the value `switchExpr` from
+   * the guard. This only occurs in case clauses in a type switch statement
+   * which declares a variable in its guard.
+   *
+   * For example, consider this type switch statement:
+   *
+   * ```go
+   * switch y := x.(type) {
+   * case Type1:
+   *   f(y)
+   *   ...
+   * }
+   * ```
+   *
+   * The `y` inside the case clause is actually a local variable with type
+   * `Type1` that is implicitly declared at the top of the case clause. In
+   * default clauses and case clauses which list more than one type, the type
+   * of the implicitly declared variable is the type of `switchExpr`.
+   */
+  class TypeSwitchImplicitVariableInstruction extends Instruction, MkTypeSwitchImplicitVariable {
     CaseClause cc;
+    LocalVariable lv;
+    Expr switchExpr;
 
-    TypeSwitchImplicitVariableInstruction() { this.isAdditional(cc, "type-switch-var") }
+    TypeSwitchImplicitVariableInstruction() {
+      this = MkTypeSwitchImplicitVariable(cc, lv, switchExpr)
+    }
 
     override predicate writes(ValueEntity v, Instruction rhs) {
-      v = cc.getImplicitlyDeclaredVariable() and
-      exists(TypeSwitchStmt ts | cc = ts.getACase() | rhs = evalExprInstruction(ts.getExpr()))
+      v = lv and
+      rhs = evalExprInstruction(switchExpr)
     }
 
     override ControlFlow::Root getRoot() { result.isRootOf(cc) }
+
+    override string toString() { result = "implicit type switch variable declaration" }
+
+    override Location getLocation() { result = cc.getLocation() }
   }
 
-  class EvalImplicitLowerSliceBoundInstruction extends Instruction {
+  /**
+   * An instruction computing the implicit lower slice bound of zero in a slice expression without
+   * an explicit lower bound.
+   */
+  class EvalImplicitLowerSliceBoundInstruction extends Instruction, MkImplicitLowerSliceBound {
     SliceExpr slice;
 
-    EvalImplicitLowerSliceBoundInstruction() { this.isAdditional(slice, "implicit-low") }
+    EvalImplicitLowerSliceBoundInstruction() { this = MkImplicitLowerSliceBound(slice) }
 
     override Type getResultType() { result instanceof IntType }
 
@@ -1074,33 +1215,58 @@ module IR {
     override predicate isConst() { any() }
 
     override predicate isPlatformIndependentConstant() { any() }
+
+    override string toString() { result = "0" }
+
+    override Location getLocation() { result = slice.getLocation() }
   }
 
-  class EvalImplicitUpperSliceBoundInstruction extends Instruction {
+  /**
+   * An instruction computing the implicit upper slice bound in a slice expression without an
+   * explicit upper bound.
+   */
+  class EvalImplicitUpperSliceBoundInstruction extends Instruction, MkImplicitUpperSliceBound {
     SliceExpr slice;
 
-    EvalImplicitUpperSliceBoundInstruction() { this.isAdditional(slice, "implicit-high") }
+    EvalImplicitUpperSliceBoundInstruction() { this = MkImplicitUpperSliceBound(slice) }
 
     override ControlFlow::Root getRoot() { result.isRootOf(slice) }
 
     override Type getResultType() { result instanceof IntType }
+
+    override string toString() { result = "len" }
+
+    override Location getLocation() { result = slice.getLocation() }
   }
 
-  class EvalImplicitMaxSliceBoundInstruction extends Instruction {
+  /**
+   * An instruction computing the implicit maximum slice bound in a slice expression without an
+   * explicit maximum bound.
+   */
+  class EvalImplicitMaxSliceBoundInstruction extends Instruction, MkImplicitMaxSliceBound {
     SliceExpr slice;
 
-    EvalImplicitMaxSliceBoundInstruction() { this.isAdditional(slice, "implicit-max") }
+    EvalImplicitMaxSliceBoundInstruction() { this = MkImplicitMaxSliceBound(slice) }
 
     override ControlFlow::Root getRoot() { result.isRootOf(slice) }
 
     override Type getResultType() { result instanceof IntType }
+
+    override string toString() { result = "cap" }
+
+    override Location getLocation() { result = slice.getLocation() }
   }
 
-  class EvalImplicitDerefInstruction extends Instruction {
+  /**
+   * An instruction implicitly dereferencing the base in a field or method reference through a
+   * pointer, or the base in an element or slice reference through a pointer.
+   */
+  class EvalImplicitDerefInstruction extends Instruction, MkImplicitDeref {
     Expr e;
 
-    EvalImplicitDerefInstruction() { this.isAdditional(e, "implicit-deref") }
+    EvalImplicitDerefInstruction() { this = MkImplicitDeref(e) }
 
+    /** Gets the operand that is being dereferenced. */
     Expr getOperand() { result = e }
 
     override Type getResultType() {
@@ -1108,38 +1274,13 @@ module IR {
     }
 
     override ControlFlow::Root getRoot() { result.isRootOf(e) }
+
+    override string toString() { result = "implicit dereference" }
+
+    override Location getLocation() { result = e.getLocation() }
   }
 
   /** A representation of the target of a write instruction. */
-  newtype TWriteTarget =
-    MkLhs(ControlFlow::Node write, Expr lhs) {
-      exists(AstNode assgn, int i | write.isAdditional(assgn, "assign:" + i.toString()) |
-        lhs = assgn.(Assignment).getLhs(i).stripParens()
-        or
-        lhs = assgn.(ValueSpec).getNameExpr(i)
-        or
-        exists(RangeStmt rs | rs = assgn |
-          i = 0 and lhs = rs.getKey().stripParens()
-          or
-          i = 1 and lhs = rs.getValue().stripParens()
-        )
-      )
-      or
-      exists(IncDecStmt ids | write.isIn(ids) | lhs = ids.getOperand().stripParens())
-      or
-      exists(FuncDef fd, int idx |
-        write.isAdditional(fd, "param-init:" + idx.toString()) and
-        lhs = fd.getParameter(idx).getDeclaration()
-      )
-      or
-      exists(FuncDef fd, int idx |
-        write.isAdditional(fd, "result-init:" + idx.toString()) and
-        lhs = fd.getResultVar(idx).getDeclaration()
-      )
-    } or
-    MkLiteralElementTarget(InitLiteralComponentInstruction elt) or
-    MkResultWriteTarget(WriteResultInstruction w)
-
   class WriteTarget extends TWriteTarget {
     ControlFlow::Node w;
 
@@ -1147,20 +1288,35 @@ module IR {
       this = MkLhs(w, _) or this = MkLiteralElementTarget(w) or this = MkResultWriteTarget(w)
     }
 
+    /** Gets the write instruction of which this is the target. */
     WriteInstruction getWrite() { result = w }
 
+    /** Gets the name of the variable or field being written to, if any. */
     string getName() { none() }
 
+    /** Gets the SSA variable being written to, if any. */
     SsaVariable asSsaVariable() {
       this.getWrite() = result.getDefinition().(SsaExplicitDefinition).getInstruction()
     }
 
+    /** Holds if `e` is the variable or field being written to. */
     predicate refersTo(ValueEntity e) { none() }
 
+    /** Gets a textual representation of this target. */
     string toString() { result = "write target" }
 
+    /** Gets the source location for this element. */
     Location getLocation() { none() }
 
+    /**
+     * DEPRECATED: Use `getLocation()` instead.
+     *
+     * Holds if this element is at the specified location.
+     * The location spans column `startcolumn` of line `startline` to
+     * column `endcolumn` of line `endline` in file `filepath`.
+     * For more information, see
+     * [Locations](https://codeql.github.com/docs/writing-codeql-queries/providing-locations-in-codeql-queries/).
+     */
     deprecated predicate hasLocationInfo(
       string filepath, int startline, int startcolumn, int endline, int endcolumn
     ) {
@@ -1175,6 +1331,7 @@ module IR {
     }
   }
 
+  /** A reference to a variable or constant, used as the target of a write. */
   class VarOrConstTarget extends WriteTarget {
     Expr loc;
 
@@ -1215,11 +1372,18 @@ module IR {
       )
     }
 
+    /** Gets the variable this refers to, if any. */
     Variable getVariable() { this.refersTo(result) }
 
+    /** Gets the constant this refers to, if any. */
     Constant getConstant() { this.refersTo(result) }
+
+    override string toString() { result = this.getName() }
+
+    override Location getLocation() { result = loc.getLocation() }
   }
 
+  /** A reference to a field, used as the target of a write. */
   class FieldTarget extends WriteTarget {
     FieldTarget() {
       exists(SelectorExpr sel | this = MkLhs(_, sel) | sel.getBase() instanceof ValueExpr)
@@ -1227,12 +1391,14 @@ module IR {
       w instanceof InitLiteralStructFieldInstruction
     }
 
+    /** Gets the instruction computing the base value on which this field is accessed. */
     Instruction getBase() {
       exists(SelectorExpr sel | this = MkLhs(_, sel) | result = selectorBase(sel))
       or
       result = w.(InitLiteralStructFieldInstruction).getBase()
     }
 
+    /** Get the type of the base of this field access, that is, the type that contains the field. */
     Type getBaseType() { result = this.getBase().getResultType() }
 
     override predicate refersTo(ValueEntity e) {
@@ -1243,9 +1409,27 @@ module IR {
 
     override string getName() { exists(Field f | this.refersTo(f) | result = f.getName()) }
 
+    /** Gets the field this refers to, if it can be determined. */
     Field getField() { this.refersTo(result) }
+
+    override string toString() {
+      exists(SelectorExpr sel | this = MkLhs(_, sel) |
+        result = "field " + sel.getSelector().getName()
+      )
+      or
+      result = "field " + w.(InitLiteralStructFieldInstruction).getFieldName()
+    }
+
+    override Location getLocation() {
+      exists(SelectorExpr sel | this = MkLhs(_, sel) | result = sel.getLocation())
+      or
+      result = w.(InitLiteralStructFieldInstruction).getLocation()
+    }
   }
 
+  /**
+   * A reference to an element of an array, slice or map, used as the target of a write.
+   */
   class ElementTarget extends WriteTarget {
     ElementTarget() {
       this = MkLhs(_, any(IndexExpr idx))
@@ -1253,19 +1437,32 @@ module IR {
       w instanceof InitLiteralElementInstruction
     }
 
+    /** Gets the instruction computing the base value of this element reference. */
     Instruction getBase() {
       exists(IndexExpr idx | this = MkLhs(_, idx) | result = selectorBase(idx))
       or
       result = w.(InitLiteralComponentInstruction).getBase()
     }
 
+    /** Gets the instruction computing the index of this element reference. */
     Instruction getIndex() {
       exists(IndexExpr idx | this = MkLhs(_, idx) | result = evalExprInstruction(idx.getIndex()))
       or
       result = w.(InitLiteralElementInstruction).getIndex()
     }
+
+    override string toString() { result = "element" }
+
+    override Location getLocation() {
+      exists(IndexExpr idx | this = MkLhs(_, idx) | result = idx.getLocation())
+      or
+      result = w.(InitLiteralElementInstruction).getLocation()
+    }
   }
 
+  /**
+   * A pointer dereference, used as the target of a write.
+   */
   class PointerTarget extends WriteTarget {
     Expr lhs;
 
@@ -1274,75 +1471,109 @@ module IR {
       (lhs instanceof StarExpr or lhs instanceof DerefExpr)
     }
 
+    /** Gets the instruction computing the pointer value being dereferenced. */
     Instruction getBase() {
       exists(Expr base | base = lhs.(StarExpr).getBase() or base = lhs.(DerefExpr).getOperand() |
         result = evalExprInstruction(base)
       )
     }
+
+    override string toString() { result = lhs.toString() }
+
+    override Location getLocation() { result = lhs.getLocation() }
   }
 
   /**
    * Gets the (final) instruction computing the value of `e`.
+   *
+   * Note that some expressions (such as type expressions or labels) have no corresponding
+   * instruction, so this predicate is undefined for them.
+   *
+   * Short-circuiting expressions that are purely used for control flow (meaning that their
+   * value is not stored in a variable or used to compute the value of a non-shortcircuiting
+   * expression) do not have a final instruction either.
    */
   Instruction evalExprInstruction(Expr e) {
-    result.(EvalInstruction).getExpr() = e
-    or
+    result = MkExprNode(e) or
     result = evalExprInstruction(e.(ParenExpr).getExpr())
   }
 
-  InitParameterInstruction initRecvInstruction(ReceiverVariable r) {
-    exists(FuncDef fd, int i |
-      fd.getParameter(i) = r and result.isAdditional(fd, "param-init:" + i.toString())
-    )
-  }
+  /**
+   * Gets the instruction corresponding to the initialization of `r`.
+   */
+  InitParameterInstruction initRecvInstruction(ReceiverVariable r) { result = MkParameterInit(r) }
 
-  InitParameterInstruction initParamInstruction(Parameter p) {
-    exists(FuncDef fd, int i |
-      fd.getParameter(i) = p and result.isAdditional(fd, "param-init:" + i.toString())
-    )
-  }
+  /**
+   * Gets the instruction corresponding to the initialization of `p`.
+   */
+  InitParameterInstruction initParamInstruction(Parameter p) { result = MkParameterInit(p) }
 
-  AssignInstruction assignInstruction(Assignment assgn, int i) {
-    result.isAdditional(assgn, "assign:" + i.toString()) and
-    exists(assgn.getLhs(i))
-  }
+  /**
+   * Gets the instruction corresponding to the `i`th assignment happening at
+   * `assgn` (0-based).
+   */
+  AssignInstruction assignInstruction(Assignment assgn, int i) { result = MkAssignNode(assgn, i) }
 
-  AssignInstruction initInstruction(ValueSpec spec, int i) {
-    result.isAdditional(spec, "assign:" + i.toString()) and
-    exists(spec.getNameExpr(i))
-  }
+  /**
+   * Gets the instruction corresponding to the `i`th initialization happening
+   * at `spec` (0-based).
+   */
+  AssignInstruction initInstruction(ValueSpec spec, int i) { result = MkAssignNode(spec, i) }
 
-  AssignInstruction assignKeyInstruction(RangeStmt rs) { result.isAdditional(rs, "assign:0") }
+  /**
+   * Gets the instruction corresponding to the assignment of the key variable
+   * of range statement `rs`.
+   */
+  AssignInstruction assignKeyInstruction(RangeStmt rs) { result = MkAssignNode(rs, 0) }
 
-  AssignInstruction assignValueInstruction(RangeStmt rs) { result.isAdditional(rs, "assign:1") }
+  /**
+   * Gets the instruction corresponding to the assignment of the value variable
+   * of range statement `rs`.
+   */
+  AssignInstruction assignValueInstruction(RangeStmt rs) { result = MkAssignNode(rs, 1) }
 
-  EvalImplicitInitInstruction implicitInitInstruction(ValueEntity v) {
-    exists(ValueSpec spec, int i |
-      spec.getNameExpr(i) = v.getDeclaration() and
-      result.isAdditional(spec, "zero-init:" + i.toString())
-    )
-  }
+  /**
+   * Gets the instruction corresponding to the implicit initialization of `v`
+   * to its zero value.
+   */
+  EvalImplicitInitInstruction implicitInitInstruction(ValueEntity v) { result = MkZeroInitNode(v) }
 
+  /**
+   * Gets the instruction corresponding to the extraction of the `idx`th element
+   * of the tuple produced by `base`.
+   */
   ExtractTupleElementInstruction extractTupleElement(Instruction base, int idx) {
     result.extractsElement(base, idx)
   }
 
+  /**
+   * Gets the instruction corresponding to the implicit lower bound of slice `e`, if any.
+   */
   EvalImplicitLowerSliceBoundInstruction implicitLowerSliceBoundInstruction(SliceExpr e) {
-    result.isAdditional(e, "implicit-low")
+    result = MkImplicitLowerSliceBound(e)
   }
 
+  /**
+   * Gets the instruction corresponding to the implicit upper bound of slice `e`, if any.
+   */
   EvalImplicitUpperSliceBoundInstruction implicitUpperSliceBoundInstruction(SliceExpr e) {
-    result.isAdditional(e, "implicit-high")
+    result = MkImplicitUpperSliceBound(e)
   }
 
+  /**
+   * Gets the instruction corresponding to the implicit maximum bound of slice `e`, if any.
+   */
   EvalImplicitMaxSliceBoundInstruction implicitMaxSliceBoundInstruction(SliceExpr e) {
-    result.isAdditional(e, "implicit-max")
+    result = MkImplicitMaxSliceBound(e)
   }
 
-  EvalImplicitDerefInstruction implicitDerefInstruction(Expr e) {
-    result.isAdditional(e, "implicit-deref")
-  }
+  /**
+   * Gets the implicit dereference instruction for `e`, where `e` is a pointer used as the base
+   * in a field/method access, element access, or slice expression.
+   */
+  EvalImplicitDerefInstruction implicitDerefInstruction(Expr e) { result = MkImplicitDeref(e) }
 
+  /** Gets the base of `insn`, if `insn` is an implicit field read. */
   Instruction lookThroughImplicitFieldRead(Instruction insn) {
     result = insn.(ImplicitFieldReadInstruction).getBaseInstruction()
   }

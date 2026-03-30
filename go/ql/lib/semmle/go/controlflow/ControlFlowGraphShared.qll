@@ -25,6 +25,11 @@ module GoCfg {
   private import Cfg2
   import Public
 
+  /** Holds if `e` has an implicit field selection at `index` for `implicitField`. */
+  predicate implicitFieldSelection(Go::AstNode e, int index, Go::Field implicitField) {
+    Input::implicitFieldSelection(e, index, implicitField)
+  }
+
   /** Provides an implementation of the AST signature for Go. */
   private module Ast implements CfgLib::AstSig<Go::Location> {
     class AstNode = Go::AstNode;
@@ -63,7 +68,11 @@ module GoCfg {
 
     AstNode callableGetBody(Callable c) { result = c.(Go::FuncDef).getBody() }
 
-    Callable getEnclosingCallable(AstNode node) { result = node.getEnclosingFunction() }
+    Callable getEnclosingCallable(AstNode node) {
+      result = node and node instanceof Callable
+      or
+      not node instanceof Callable and result = node.getEnclosingFunction()
+    }
 
     class Stmt = Go::Stmt;
 
@@ -515,7 +524,7 @@ module GoCfg {
     private predicate notBlankIdent(Go::Expr e) { not e instanceof Go::BlankIdent }
 
     /** Helper: implicit field selection for promoted selectors */
-    private predicate implicitFieldSelection(Ast::AstNode e, int index, Go::Field implicitField) {
+    predicate implicitFieldSelection(Ast::AstNode e, int index, Go::Field implicitField) {
       exists(Go::StructType baseType, Go::PromotedField child, int implicitFieldDepth |
         baseType = e.(Go::PromotedSelector).getSelectedStructType() and
         (

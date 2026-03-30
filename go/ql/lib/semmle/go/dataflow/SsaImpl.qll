@@ -89,7 +89,7 @@ private module Internal {
   /** Holds if the `i`th node of `bb` in function `f` is an entry node. */
   private predicate entryNode(FuncDef f, ReachableBasicBlock bb, int i) {
     f = bb.getScope() and
-    bb.getNode(i).isEntryNode()
+    bb.getNode(i).(ControlFlow::Node).isEntryNode()
   }
 
   /**

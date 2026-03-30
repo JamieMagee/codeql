@@ -308,7 +308,247 @@ module GoCfg {
       n.(Go::SelectorExpr).getBase() instanceof Go::ValueExpr
     }
 
-    predicate additionalNode(Ast::AstNode n, string tag, NormalSuccessor t) { none() }
+    predicate additionalNode(Ast::AstNode n, string tag, NormalSuccessor t) {
+      t instanceof DirectSuccessor and
+      (
+        // Assignment write nodes: one per LHS
+        exists(int i |
+          (
+            notBlankIdent(n.(Go::Assignment).getLhs(i))
+            or
+            notBlankIdent(n.(Go::ValueSpec).getNameExpr(i))
+            or
+            notBlankIdent(n.(Go::RangeStmt).getKey()) and i = 0
+            or
+            notBlankIdent(n.(Go::RangeStmt).getValue()) and i = 1
+          ) and
+          tag = "assign:" + i.toString()
+        )
+        or
+        // Compound assignment implicit RHS
+        n instanceof Go::CompoundAssignStmt and tag = "compound-rhs"
+        or
+        // Tuple extraction nodes
+        exists(int i |
+          extractNodeCondition(n, i) and
+          tag = "extract:" + i.toString()
+        )
+        or
+        // Zero initialization (on the ValueSpec)
+        exists(int i, Go::ValueSpec spec |
+          n = spec and
+          not exists(spec.getAnInit()) and
+          exists(spec.getNameExpr(i)) and
+          tag = "zero-init:" + i.toString()
+        )
+        or
+        // Increment/decrement implicit operations
+        n instanceof Go::IncDecStmt and tag = "implicit-one"
+        or
+        n instanceof Go::IncDecStmt and tag = "incdec-rhs"
+        or
+        // Return node
+        n instanceof Go::ReturnStmt and tag = "return"
+        or
+        // Result write nodes in return statements
+        exists(int i, Go::ReturnStmt ret |
+          n = ret and
+          exists(ret.getEnclosingFunction().getResultVar(i)) and
+          exists(ret.getAnExpr()) and
+          tag = "result-write:" + i.toString()
+        )
+        or
+        // Result read nodes (on the FuncDef)
+        exists(int i, Go::FuncDef fd |
+          n = fd and
+          exists(fd.getBody()) and
+          exists(fd.getResultVar(i)) and
+          tag = "result-read:" + i.toString()
+        )
+        or
+        // Parameter init + argument nodes (on the FuncDef)
+        exists(int i, Go::FuncDef fd |
+          n = fd and
+          exists(fd.getBody()) and
+          exists(fd.getParameter(i)) and
+          (tag = "param-init:" + i.toString() or tag = "arg:" + i.toString())
+        )
+        or
+        // Result variable init (on the FuncDef)
+        exists(int i, Go::FuncDef fd |
+          n = fd and
+          exists(fd.getBody()) and
+          exists(fd.getResultVar(i)) and
+          tag = "result-init:" + i.toString()
+        )
+        or
+        // Result variable zero init (on the FuncDef)
+        exists(int i, Go::FuncDef fd |
+          n = fd and
+          exists(fd.getBody()) and
+          exists(fd.getResultVar(i)) and
+          exists(fd.getResultVar(i).(Go::ResultVariable).getFunction().getBody()) and
+          tag = "result-zero-init:" + i.toString()
+        )
+        or
+        // Next node for range statements
+        n instanceof Go::RangeStmt and tag = "next"
+        or
+        // Send node
+        n instanceof Go::SendStmt and
+        not n = any(Go::CommClause cc).getComm() and
+        tag = "send"
+        or
+        // Implicit deref
+        implicitDerefCondition(n) and tag = "implicit-deref"
+        or
+        // Implicit slice bounds
+        n instanceof Go::SliceExpr and
+        not exists(n.(Go::SliceExpr).getLow()) and
+        tag = "implicit-low"
+        or
+        n instanceof Go::SliceExpr and
+        not exists(n.(Go::SliceExpr).getHigh()) and
+        tag = "implicit-high"
+        or
+        n instanceof Go::SliceExpr and
+        not exists(n.(Go::SliceExpr).getMax()) and
+        tag = "implicit-max"
+        or
+        // Implicit true in tagless switch
+        n instanceof Go::ExpressionSwitchStmt and
+        not exists(n.(Go::ExpressionSwitchStmt).getExpr()) and
+        tag = "implicit-true"
+        or
+        // Case check nodes
+        exists(int i |
+          exists(n.(Go::CaseClause).getExpr(i)) and
+          tag = "case-check:" + i.toString()
+        )
+        or
+        // Type switch implicit variable
+        exists(Go::TypeSwitchStmt ts, Go::DefineStmt ds |
+          ds = ts.getAssign() and
+          n.(Go::CaseClause) = ts.getACase() and
+          exists(n.(Go::CaseClause).getImplicitlyDeclaredVariable()) and
+          tag = "type-switch-var"
+        )
+        or
+        // Literal element initialization
+        n = any(Go::CompositeLit lit).getAnElement() and
+        tag = "lit-init"
+        or
+        // Implicit literal element index
+        exists(Go::CompositeLit lit |
+          not lit instanceof Go::StructLit and
+          n = lit.getAnElement() and
+          not n instanceof Go::KeyValueExpr and
+          tag = "lit-index"
+        )
+        or
+        // Implicit field selection for promoted fields
+        exists(int i, Go::Field implicitField |
+          implicitFieldSelection(n, i, implicitField) and
+          tag = "implicit-field:" + i.toString()
+        )
+      )
+    }
+
+    /** Helper: condition for MkExtractNode */
+    private predicate extractNodeCondition(Ast::AstNode s, int i) {
+      exists(Go::Assignment assgn |
+        s = assgn and
+        exists(assgn.getRhs()) and
+        assgn.getNumLhs() > 1 and
+        exists(assgn.getLhs(i))
+      )
+      or
+      exists(Go::ValueSpec spec |
+        s = spec and
+        exists(spec.getInit()) and
+        spec.getNumName() > 1 and
+        exists(spec.getNameExpr(i))
+      )
+      or
+      exists(Go::RangeStmt rs | s = rs |
+        exists(rs.getKey()) and i = 0
+        or
+        exists(rs.getValue()) and i = 1
+      )
+      or
+      exists(Go::ReturnStmt ret, Go::SignatureType rettp |
+        s = ret and
+        exists(ret.getExpr()) and
+        rettp = ret.getEnclosingFunction().getType() and
+        rettp.getNumResult() > 1 and
+        exists(rettp.getResultType(i))
+      )
+      or
+      exists(Go::CallExpr outer, Go::CallExpr inner | s = outer |
+        inner = outer.getArgument(0).stripParens() and
+        outer.getNumArgument() = 1 and
+        exists(inner.getType().(Go::TupleType).getComponentType(i))
+      )
+    }
+
+    /** Helper: condition for implicit dereference */
+    private predicate implicitDerefCondition(Ast::AstNode e) {
+      e.(Go::Expr).getType().getUnderlyingType() instanceof Go::PointerType and
+      (
+        exists(Go::SelectorExpr sel | e = sel.getBase() |
+          sel = any(Go::Field f).getAReference()
+          or
+          exists(Go::Method m, Go::Type tp |
+            sel = m.getAReference() and
+            tp = m.getReceiver().getType().getUnderlyingType() and
+            not tp instanceof Go::PointerType
+          )
+        )
+        or
+        e = any(Go::IndexExpr ie).getBase()
+        or
+        e = any(Go::SliceExpr se).getBase()
+      )
+    }
+
+    /** Helper: blank identifier check */
+    private predicate notBlankIdent(Go::Expr e) { not e instanceof Go::BlankIdent }
+
+    /** Helper: implicit field selection for promoted selectors */
+    private predicate implicitFieldSelection(Ast::AstNode e, int index, Go::Field implicitField) {
+      exists(Go::StructType baseType, Go::PromotedField child, int implicitFieldDepth |
+        baseType = e.(Go::PromotedSelector).getSelectedStructType() and
+        (
+          e.(Go::PromotedSelector).refersTo(child)
+          or
+          implicitFieldSelection(e, implicitFieldDepth + 1, child)
+        )
+      |
+        child = baseType.getFieldOfEmbedded(implicitField, _, implicitFieldDepth + 1, _) and
+        exists(Go::PromotedField explicitField, int explicitFieldDepth |
+          e.(Go::PromotedSelector).refersTo(explicitField) and
+          baseType.getFieldAtDepth(_, explicitFieldDepth) = explicitField
+        |
+          index = explicitFieldDepth - implicitFieldDepth
+        )
+      )
+      or
+      exists(
+        Go::StructType baseType, Go::PromotedMethod method, int mDepth, int implicitFieldDepth
+      |
+        baseType = e.(Go::PromotedSelector).getSelectedStructType() and
+        e.(Go::PromotedSelector).refersTo(method) and
+        baseType.getMethodAtDepth(_, mDepth) = method and
+        index = mDepth - implicitFieldDepth
+      |
+        method = baseType.getMethodOfEmbedded(implicitField, _, implicitFieldDepth + 1)
+        or
+        exists(Go::PromotedField child |
+          child = baseType.getFieldOfEmbedded(implicitField, _, implicitFieldDepth + 1, _) and
+          implicitFieldSelection(e, implicitFieldDepth + 1, child)
+        )
+      )
+    }
 
     predicate beginAbruptCompletion(
       Ast::AstNode ast, PreControlFlowNode n, AbruptCompletion c, boolean always
@@ -391,7 +631,396 @@ module GoCfg {
       switchStmt(n1, n2) or
       selectStmt(n1, n2) or
       deferStmt(n1, n2) or
-      goStmtStep(n1, n2)
+      goStmtStep(n1, n2) or
+      assignmentStep(n1, n2) or
+      incDecStep(n1, n2) or
+      returnStep(n1, n2) or
+      indexExprStep(n1, n2) or
+      sliceExprStep(n1, n2) or
+      selectorExprStep(n1, n2) or
+      compositeLitStep(n1, n2) or
+      sendStmtStep(n1, n2)
+    }
+
+    /**
+     * Gets the non-skipped child of `parent` at rank `rnk` (1-based).
+     * This mimics the shared library's getRankedChild but for use in explicit steps.
+     */
+    private Ast::AstNode getRankedChild(Ast::AstNode parent, int rnk) {
+      result = rank[rnk](Ast::AstNode c, int ix | c = getChild(parent, ix) | c order by ix)
+    }
+
+    private Ast::AstNode getChild(Ast::AstNode parent, int ix) {
+      result = Ast::getChild(parent, ix)
+    }
+
+    /**
+     * Routes from isBefore(parent) through all non-skipped children in order,
+     * then to the first epilogue node (additionalNode or isIn/isAfter).
+     * This is for constructs where we manually override default flow.
+     */
+    private predicate childSequenceStep(
+      Ast::AstNode parent, PreControlFlowNode n1, PreControlFlowNode n2
+    ) {
+      // Before parent → Before first child
+      n1.isBefore(parent) and n2.isBefore(getRankedChild(parent, 1))
+      or
+      // After child i → Before child i+1
+      exists(int i |
+        n1.isAfter(getRankedChild(parent, i)) and
+        n2.isBefore(getRankedChild(parent, i + 1))
+      )
+    }
+
+    /** Gets the last non-skipped child of `parent`, or fails if none. */
+    private Ast::AstNode getLastRankedChild(Ast::AstNode parent) {
+      exists(int i |
+        result = getRankedChild(parent, i) and
+        not exists(getRankedChild(parent, i + 1))
+      )
+    }
+
+    /**
+     * Assignment flow: routes through LHS/RHS children, then through
+     * additional nodes for compound-rhs, extract, zero-init, and assign
+     * operations.
+     */
+    private predicate assignmentStep(PreControlFlowNode n1, PreControlFlowNode n2) {
+      exists(Ast::AstNode assgn |
+        (
+          assgn instanceof Go::Assignment and not assgn instanceof Go::RecvStmt
+          or
+          assgn instanceof Go::ValueSpec
+        )
+      |
+        // Route through children (LHS names, RHS expressions)
+        childSequenceStep(assgn, n1, n2)
+        or
+        // After last child → first epilogue node
+        exists(Ast::AstNode lastChild | lastChild = getLastRankedChild(assgn) |
+          n1.isAfter(lastChild) and n2.isAdditional(assgn, getFirstEpilogueTag(assgn))
+        )
+        or
+        // No children at all → before → first epilogue
+        not exists(getRankedChild(assgn, _)) and
+        n1.isBefore(assgn) and
+        n2.isAdditional(assgn, getFirstEpilogueTag(assgn))
+        or
+        // Chain through epilogue nodes
+        exists(string tag1, string tag2 |
+          epilogueSucc(assgn, tag1, tag2) and
+          n1.isAdditional(assgn, tag1) and
+          n2.isAdditional(assgn, tag2)
+        )
+        or
+        // Last epilogue → after the assignment
+        n1.isAdditional(assgn, getLastEpilogueTag(assgn)) and
+        n2.isAfter(assgn)
+        or
+        // No epilogue at all → after last child → after assignment
+        not exists(getFirstEpilogueTag(assgn)) and
+        n1.isAfter(getLastRankedChild(assgn)) and
+        n2.isAfter(assgn)
+      )
+    }
+
+    /**
+     * Gets the ordered epilogue tags for an assignment node, following the
+     * pattern: compound-rhs?, (extract:i, assign:i | zero-init:i, assign:i)*
+     */
+    private string getEpilogueTag(Ast::AstNode assgn, int ord) {
+      // Compound RHS comes first
+      assgn instanceof Go::CompoundAssignStmt and
+      ord = -1 and
+      result = "compound-rhs"
+      or
+      exists(int j |
+        (
+          extractNodeCondition(assgn, j) and result = "extract:" + j.toString() and ord = 2 * j
+          or
+          exists(Go::ValueSpec spec |
+            assgn = spec and
+            not exists(spec.getAnInit()) and
+            exists(spec.getNameExpr(j)) and
+            result = "zero-init:" + j.toString() and
+            ord = 2 * j
+          )
+          or
+          (
+            notBlankIdent(assgn.(Go::Assignment).getLhs(j))
+            or
+            notBlankIdent(assgn.(Go::ValueSpec).getNameExpr(j))
+          ) and
+          result = "assign:" + j.toString() and
+          ord = 2 * j + 1
+        )
+      )
+    }
+
+    private string getEpilogueTagRanked(Ast::AstNode assgn, int rnk) {
+      result =
+        rank[rnk](string tag, int ord |
+          tag = getEpilogueTag(assgn, ord) and
+          exists(tag)
+        |
+          tag order by ord
+        )
+    }
+
+    private string getFirstEpilogueTag(Ast::AstNode assgn) {
+      result = getEpilogueTagRanked(assgn, 1)
+    }
+
+    private string getLastEpilogueTag(Ast::AstNode assgn) {
+      exists(int i |
+        result = getEpilogueTagRanked(assgn, i) and
+        not exists(getEpilogueTagRanked(assgn, i + 1))
+      )
+    }
+
+    private predicate epilogueSucc(Ast::AstNode assgn, string tag1, string tag2) {
+      exists(int i |
+        tag1 = getEpilogueTagRanked(assgn, i) and
+        tag2 = getEpilogueTagRanked(assgn, i + 1)
+      )
+    }
+
+    /**
+     * Increment/decrement: operand → implicit-one → incdec-rhs → In(stmt)
+     * (IncDecStmt is in postOrInOrder, so In(stmt) is its evaluation point)
+     */
+    private predicate incDecStep(PreControlFlowNode n1, PreControlFlowNode n2) {
+      exists(Go::IncDecStmt s |
+        // Before → Before operand
+        n1.isBefore(s) and n2.isBefore(s.getOperand())
+        or
+        // After operand → implicit-one
+        n1.isAfter(s.getOperand()) and n2.isAdditional(s, "implicit-one")
+        or
+        // implicit-one → incdec-rhs
+        n1.isAdditional(s, "implicit-one") and n2.isAdditional(s, "incdec-rhs")
+        or
+        // incdec-rhs → In(stmt) (the assignment itself)
+        n1.isAdditional(s, "incdec-rhs") and n2.isIn(s)
+        or
+        // In(stmt) → After(stmt)
+        n1.isIn(s) and n2.isAfter(s)
+      )
+    }
+
+    /**
+     * Return statement: evaluate expressions, extract tuples, write results,
+     * then the return node.
+     */
+    private predicate returnStep(PreControlFlowNode n1, PreControlFlowNode n2) {
+      exists(Go::ReturnStmt ret |
+        // Route through expression children
+        childSequenceStep(ret, n1, n2)
+        or
+        exists(Ast::AstNode lastChild | lastChild = getLastRankedChild(ret) |
+          // After last expr → first return epilogue
+          n1.isAfter(lastChild) and n2.isAdditional(ret, getFirstReturnEpilogueTag(ret))
+        )
+        or
+        // No expressions → before → return node directly
+        not exists(getRankedChild(ret, _)) and
+        n1.isBefore(ret) and
+        n2.isIn(ret)
+        or
+        // Chain return epilogue nodes
+        exists(string tag1, string tag2 |
+          returnEpilogueSucc(ret, tag1, tag2) and
+          n1.isAdditional(ret, tag1) and
+          n2.isAdditional(ret, tag2)
+        )
+        or
+        // Last return epilogue → In(ret) (the return itself)
+        n1.isAdditional(ret, getLastReturnEpilogueTag(ret)) and
+        n2.isIn(ret)
+      )
+    }
+
+    private string getReturnEpilogueTag(Go::ReturnStmt ret, int ord) {
+      exists(int i |
+        extractNodeCondition(ret, i) and result = "extract:" + i.toString() and ord = 2 * i
+        or
+        exists(Go::ResultVariable rv |
+          ret.getEnclosingFunction().getResultVar(i) = rv and
+          exists(ret.getAnExpr()) and
+          result = "result-write:" + i.toString() and
+          ord = 2 * i + 1
+        )
+      )
+    }
+
+    private string getReturnEpilogueTagRanked(Go::ReturnStmt ret, int rnk) {
+      result =
+        rank[rnk](string tag, int ord |
+          tag = getReturnEpilogueTag(ret, ord) and
+          exists(tag)
+        |
+          tag order by ord
+        )
+    }
+
+    private string getFirstReturnEpilogueTag(Go::ReturnStmt ret) {
+      result = getReturnEpilogueTagRanked(ret, 1)
+    }
+
+    private string getLastReturnEpilogueTag(Go::ReturnStmt ret) {
+      exists(int i |
+        result = getReturnEpilogueTagRanked(ret, i) and
+        not exists(getReturnEpilogueTagRanked(ret, i + 1))
+      )
+    }
+
+    private predicate returnEpilogueSucc(Go::ReturnStmt ret, string tag1, string tag2) {
+      exists(int i |
+        tag1 = getReturnEpilogueTagRanked(ret, i) and
+        tag2 = getReturnEpilogueTagRanked(ret, i + 1)
+      )
+    }
+
+    /**
+     * Index expression: base → implicit-deref? → index → In(indexExpr)
+     */
+    private predicate indexExprStep(PreControlFlowNode n1, PreControlFlowNode n2) {
+      exists(Go::IndexExpr ie |
+        implicitDerefCondition(ie.getBase()) and
+        (
+          n1.isBefore(ie) and n2.isBefore(ie.getBase())
+          or
+          n1.isAfter(ie.getBase()) and n2.isAdditional(ie.getBase(), "implicit-deref")
+          or
+          n1.isAdditional(ie.getBase(), "implicit-deref") and n2.isBefore(ie.getIndex())
+          or
+          n1.isAfter(ie.getIndex()) and n2.isIn(ie)
+          or
+          n1.isIn(ie) and n2.isAfter(ie)
+        )
+      )
+    }
+
+    /**
+     * Slice expression: base → implicit-deref? → low/implicit-low →
+     * high/implicit-high → max/implicit-max → In(sliceExpr)
+     */
+    private predicate sliceExprStep(PreControlFlowNode n1, PreControlFlowNode n2) {
+      exists(Go::SliceExpr se |
+        (implicitDerefCondition(se.getBase()) or exists(se.getLow()) or not exists(se.getLow())) and
+        (
+          n1.isBefore(se) and n2.isBefore(se.getBase())
+          or
+          // After base → implicit deref or low/implicit-low
+          n1.isAfter(se.getBase()) and
+          (
+            if implicitDerefCondition(se.getBase())
+            then n2.isAdditional(se.getBase(), "implicit-deref")
+            else
+              if exists(se.getLow())
+              then n2.isBefore(se.getLow())
+              else n2.isAdditional(se, "implicit-low")
+          )
+          or
+          n1.isAdditional(se.getBase(), "implicit-deref") and
+          (
+            if exists(se.getLow())
+            then n2.isBefore(se.getLow())
+            else n2.isAdditional(se, "implicit-low")
+          )
+          or
+          (n1.isAfter(se.getLow()) or n1.isAdditional(se, "implicit-low")) and
+          (
+            if exists(se.getHigh())
+            then n2.isBefore(se.getHigh())
+            else n2.isAdditional(se, "implicit-high")
+          )
+          or
+          (n1.isAfter(se.getHigh()) or n1.isAdditional(se, "implicit-high")) and
+          (
+            if exists(se.getMax())
+            then n2.isBefore(se.getMax())
+            else n2.isAdditional(se, "implicit-max")
+          )
+          or
+          (n1.isAfter(se.getMax()) or n1.isAdditional(se, "implicit-max")) and
+          n2.isIn(se)
+          or
+          n1.isIn(se) and n2.isAfter(se)
+        )
+      )
+    }
+
+    /**
+     * Selector expression with value base: base → implicit-deref? →
+     * implicit-field-selections → In(selector)
+     */
+    private predicate selectorExprStep(PreControlFlowNode n1, PreControlFlowNode n2) {
+      exists(Go::SelectorExpr sel |
+        sel.getBase() instanceof Go::ValueExpr and
+        (implicitDerefCondition(sel.getBase()) or exists(Go::Field f | sel = f.getAReference())) and
+        (
+          n1.isBefore(sel) and n2.isBefore(sel.getBase())
+          or
+          n1.isAfter(sel.getBase()) and
+          (
+            if implicitDerefCondition(sel.getBase())
+            then n2.isAdditional(sel.getBase(), "implicit-deref")
+            else n2.isIn(sel)
+          )
+          or
+          n1.isAdditional(sel.getBase(), "implicit-deref") and n2.isIn(sel)
+          or
+          n1.isIn(sel) and n2.isAfter(sel)
+        )
+      )
+    }
+
+    /**
+     * Composite literal: In(lit) → element-init chain → After(lit)
+     * CompositeLit evaluates the literal (allocation) first (pre-order),
+     * then initializes elements.
+     */
+    private predicate compositeLitStep(PreControlFlowNode n1, PreControlFlowNode n2) {
+      exists(Go::CompositeLit lit |
+        // Before → In (the literal allocation)
+        n1.isBefore(lit) and n2.isIn(lit)
+        or
+        // In → first element, or After if no elements
+        n1.isIn(lit) and
+        (
+          n2.isBefore(lit.getElement(0))
+          or
+          not exists(lit.getElement(_)) and n2.isAfter(lit)
+        )
+        or
+        // After element → lit-init → next element or After
+        exists(int i |
+          n1.isAfter(lit.getElement(i)) and n2.isAdditional(lit.getElement(i), "lit-init")
+          or
+          n1.isAdditional(lit.getElement(i), "lit-init") and
+          (
+            n2.isBefore(lit.getElement(i + 1))
+            or
+            not exists(lit.getElement(i + 1)) and n2.isAfter(lit)
+          )
+        )
+      )
+    }
+
+    /**
+     * Send statement (outside select): channel → value → In(send)
+     */
+    private predicate sendStmtStep(PreControlFlowNode n1, PreControlFlowNode n2) {
+      exists(Go::SendStmt s | not s = any(Go::CommClause cc).getComm() |
+        n1.isBefore(s) and n2.isBefore(s.getChannel())
+        or
+        n1.isAfter(s.getChannel()) and n2.isBefore(s.getValue())
+        or
+        n1.isAfter(s.getValue()) and n2.isIn(s)
+        or
+        n1.isIn(s) and n2.isAfter(s)
+      )
     }
 
     private predicate ifWithInit(PreControlFlowNode n1, PreControlFlowNode n2) {

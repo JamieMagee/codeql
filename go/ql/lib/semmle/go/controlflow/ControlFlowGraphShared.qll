@@ -63,7 +63,11 @@ module GoCfg {
     }
 
     class Callable extends AstNode {
-      Callable() { exists(this.(Go::FuncDef).getBody()) }
+      Callable() {
+        exists(this.(Go::FuncDef).getBody())
+        or
+        exists(this.(Go::File).getADecl())
+      }
     }
 
     AstNode callableGetBody(Callable c) { result = c }
@@ -72,6 +76,11 @@ module GoCfg {
       result = node and node instanceof Callable
       or
       not node instanceof Callable and result = node.getEnclosingFunction()
+      or
+      not node instanceof Callable and
+      not exists(node.getEnclosingFunction()) and
+      result = node.getFile() and
+      result instanceof Callable
     }
 
     class Stmt = Go::Stmt;

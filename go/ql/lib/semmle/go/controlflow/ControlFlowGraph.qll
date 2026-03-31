@@ -9,17 +9,26 @@ private import ControlFlowGraphShared
 
 /** Provides helper predicates for mapping between CFG nodes and the AST. */
 module ControlFlow {
-  /** A function with which a CFG is associated. */
+  /** A file or function with which a CFG is associated. */
   class Root extends AstNode {
-    Root() { exists(this.(FuncDef).getBody()) }
+    Root() {
+      exists(this.(FuncDef).getBody())
+      or
+      exists(this.(File).getADecl())
+    }
 
-    /** Holds if `nd` belongs to this function. */
-    predicate isRootOf(AstNode nd) { this = nd.getEnclosingFunction() }
+    /** Holds if `nd` belongs to this file or function. */
+    predicate isRootOf(AstNode nd) {
+      this = nd.getEnclosingFunction()
+      or
+      not exists(nd.getEnclosingFunction()) and
+      this = nd.getFile()
+    }
 
-    /** Gets the synthetic entry node of the CFG for this function. */
+    /** Gets the synthetic entry node of the CFG for this file or function. */
     EntryNode getEntryNode() { result = ControlFlow::entryNode(this) }
 
-    /** Gets the synthetic exit node of the CFG for this function. */
+    /** Gets the synthetic exit node of the CFG for this file or function. */
     ExitNode getExitNode() { result = ControlFlow::exitNode(this) }
   }
 

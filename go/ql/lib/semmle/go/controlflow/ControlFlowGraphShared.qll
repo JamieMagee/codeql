@@ -524,7 +524,7 @@ module GoCfg {
     private predicate notBlankIdent(Go::Expr e) { not e instanceof Go::BlankIdent }
 
     /** Helper: implicit field selection for promoted selectors */
-    predicate implicitFieldSelection(Ast::AstNode e, int index, Go::Field implicitField) {
+    additional predicate implicitFieldSelection(Ast::AstNode e, int index, Go::Field implicitField) {
       exists(Go::StructType baseType, Go::PromotedField child, int implicitFieldDepth |
         baseType = e.(Go::PromotedSelector).getSelectedStructType() and
         (

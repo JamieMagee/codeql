@@ -26,9 +26,9 @@ module IR {
       or
       this.isAdditional(_, _)
       or
-      this.isAfterTrue(_) and not this.isIn(_)
+      this.isAfterTrue(_)
       or
-      this.isAfterFalse(_) and not this.isIn(_)
+      this.isAfterFalse(_)
     }
 
     /** Holds if this instruction reads the value of variable or constant `v`. */
@@ -164,9 +164,9 @@ module IR {
   /** A condition guard instruction, representing a known boolean outcome for a condition. */
   private class ConditionGuardInstruction extends Instruction {
     ConditionGuardInstruction() {
-      this.isAfterTrue(_) and not this.isIn(_)
+      this.isAfterTrue(_)
       or
-      this.isAfterFalse(_) and not this.isIn(_)
+      this.isAfterFalse(_)
     }
   }
 
@@ -176,7 +176,7 @@ module IR {
   class EvalInstruction extends Instruction {
     Expr e;
 
-    EvalInstruction() { this.isIn(e) and e instanceof Expr }
+    EvalInstruction() { this.isIn(e) }
 
     /** Gets the expression underlying this instruction. */
     Expr getExpr() { result = e }
@@ -778,7 +778,7 @@ module IR {
   class DeclareFunctionInstruction extends Instruction {
     FuncDecl fd;
 
-    DeclareFunctionInstruction() { this.isIn(fd) and fd instanceof FuncDecl }
+    DeclareFunctionInstruction() { this.isIn(fd) }
 
     override Type getResultType() { result = fd.getType() }
   }
